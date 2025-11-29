@@ -1,0 +1,19 @@
+[
+ {emcp, [
+   {tls, [
+     {keyfile, "/config/server.key.pem"},
+     {certfile, "/config/server.cert.pem"}
+   ]},
+
+   {api_keys,
+     [
+      <<"SomeAPIKey123qwe">>
+     ]}
+ ]},
+
+ {kernel, [
+     {logger_level, info},
+     {logger_sasl_compatible, false}
+ ]}
+
+].

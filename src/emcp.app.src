@@ -1,0 +1,13 @@
+{application, emcp,
+ [{description, "Erlang MCP Server Framework"},
+  {vsn, "0.1.0"},
+  {registered, [emcp_sup]},
+  {mod, {emcp_app, []}},
+  {applications, [
+      kernel,
+      stdlib,
+      cowboy
+  ]},
+  {env, [
+  ]}
+ ]}.
