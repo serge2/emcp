@@ -61,6 +61,7 @@ init([SessionId, {McpModule, ExtraParams}]) ->
     ToolsRaw = maps:get(tools, RawSchema, maps:get(<<"tools">>, RawSchema, [])),
     ResourcesRaw = maps:get(resources, RawSchema, maps:get(<<"resources">>, RawSchema, [])),
     ToolsSchema = convert_tools_for_client(ToolsRaw),
+    ToolsArgsSchemas = generate_tools_args_schemas(ToolsSchema),
     ResourcesSchema = convert_tools_for_client(ResourcesRaw), %% same conversion logic
     ToolsFuns = extract_tools_funs(ToolsRaw),
     ResourcesFuns = extract_resources_funs(ResourcesRaw),
@@ -72,6 +73,7 @@ init([SessionId, {McpModule, ExtraParams}]) ->
             raw_schema       => RawSchema,
             tools_schema     => ToolsSchema,
             resources_schema => ResourcesSchema,
+            tools_args_schemas => ToolsArgsSchemas,
             tools_funs       => ToolsFuns,
             resources_funs   => ResourcesFuns,
             active_requests  => #{},
@@ -131,28 +133,38 @@ handle_call({tools_list, RequestId}, From, #{tools_schema := Schema} = State) ->
         end,
         From, State),
     {noreply, NewState};
-%    {reply, {ok, #{<<"tools">> => Schema}}, State};
+
 
 handle_call({tools_call, RequestId, #{<<"name">> := NameBin, <<"arguments">> := Args}}, From,
-            #{extra_params := ExtraParams} = State) ->
+            #{extra_params := ExtraParams, tools_args_schemas := ArgsSchemas} = State) ->
     NewState = spawn_request_worker(tools_call, RequestId,
         fun() ->
-            ToolsFuns = maps:get(tools_funs, State, #{}),
-            case maps:find(NameBin, ToolsFuns) of
-                {ok, Fun} -> 
-                    case Fun(NameBin, Args, ExtraParams) of
-                        {ok, Ret} ->
-                            {ok, #{<<"content">> => Ret}};
-                        {structured_ok, Ret} ->
-                            {ok, #{<<"content">> => [#{<<"type">> => <<"text">>,
-                                                <<"text">> => jsx:encode(Ret)}
-                                                ],
-                            <<"structuredContent">> => Ret}};
-                        {error, Error} ->
-                                {ok, #{<<"content">> => [#{ <<"type">> => <<"text">>,
-                                                            <<"text">> => unicode:characters_to_binary([<<"Error: ">>, Error])
-                                                        }],
-                                    <<"isError">> => true}}
+            case maps:find(NameBin, ArgsSchemas) of
+                {ok, ArgsSchema} ->
+                    case emcp_schema_validator:validate_params(ArgsSchema, Args) of
+                        {ok, ValidatedArgs} ->
+                            ToolsFuns = maps:get(tools_funs, State, #{}),
+                            case maps:find(NameBin, ToolsFuns) of
+                                {ok, Fun} ->
+                                    case Fun(NameBin, ValidatedArgs, ExtraParams) of
+                                        {ok, Ret} ->
+                                            {ok, #{<<"content">> => Ret}};
+                                        {structured_ok, Ret} ->
+                                            {ok, #{<<"content">> => [#{<<"type">> => <<"text">>,
+                                                                <<"text">> => jsx:encode(Ret)}
+                                                                ],
+                                            <<"structuredContent">> => Ret}};
+                                        {error, Error} ->
+                                                {ok, #{<<"content">> => [#{ <<"type">> => <<"text">>,
+                                                                            <<"text">> => unicode:characters_to_binary([<<"Error: ">>, Error])
+                                                                        }],
+                                                    <<"isError">> => true}}
+                                    end;
+                                error ->
+                                    {error, unsupported_tool}
+                            end;
+                        {error, ValidationError} ->
+                            {error, {invalid_arguments, ValidationError}}
                     end;
                 error ->
                     {error, unsupported_tool}
@@ -346,3 +358,10 @@ get_schema_field(Schema, AtomKey, Default) ->
                 error -> Default
             end
     end.
+
+generate_tools_args_schemas(ToolsSchema) when is_list(ToolsSchema) ->
+    lists:foldl(fun(T, Acc) ->
+        Name = maps:get(<<"name">>, T),
+        ArgsSchema = maps:get(<<"inputSchema">>, T, #{}),
+        maps:put(Name, ArgsSchema, Acc)
+    end, #{}, ToolsSchema).
