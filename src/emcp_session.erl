@@ -243,8 +243,8 @@ spawn_request_worker(Name, RequestId, Fun, From, #{active_requests := AR, active
         Res = try
             Fun()
         catch
-            Class:Reason ->
-                logger:error("Request worker error for ~p (~p): ~p, ~p", [Name, RequestId, Class, Reason]),
+            Class:Reason:Stacktrace ->
+                logger:error("Request worker error for ~p (~p): ~p, ~p~n~tp", [Name, RequestId, Class, Reason, Stacktrace]),
                 {error, {Class, Reason}}
         end,
         gen_server:reply(From, Res)
