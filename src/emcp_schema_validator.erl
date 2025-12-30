@@ -1,8 +1,11 @@
 -module(emcp_schema_validator).
--export([validate_params/2]).
+-export([
+    validate_tools_params/2,
+    validate_prompt_params/2
+]).
 
-%% validate_params(InputSchema, ParamsMap) ->
-%%   {ok, NormalizedParamsMap} | {error, ReasonBinary}
+%% validate_tools_params(InputSchema, ParamsMap) ->
+%%   {ok, NormalizedParams} | {error, ReasonBinary}
 %%
 %% InputSchema expected to be a map like:
 %%  #{<<"type">> => <<"object">>, <<"properties">> => #{...}, <<"required">> => [...]}
@@ -14,12 +17,34 @@
 %%   object  -> map (validated recursively)
 %% Supports enum in property schema.
 
-validate_params(#{<<"type">> := <<"object">>} = Schema, Params) when is_map(Params) ->
+validate_tools_params(Schema, _Params) when not is_map(Schema) ->
+    {error, <<"invalid_schema">>};
+validate_tools_params(_Schema, Params) when not is_map(Params) ->
+    {error, <<"invalid_params">>};
+validate_tools_params(Schema, Params) ->
+    validate_object(Schema, Params).
+
+
+%% validate_prompt_params(Schema, Params) ->
+%%   {ok, NormalizedParams} | {error, ReasonBinary}
+
+validate_prompt_params(Schema, _Params) when not is_list(Schema) ->
+    {error, <<"invalid_schema">>};
+validate_prompt_params(_Schema, Params) when not is_map(Params) ->
+    {error, <<"invalid_params">>};
+validate_prompt_params(_Schema, Params) ->
+    % To be implemented
+    {ok, Params}.
+
+
+
+
+validate_object(#{<<"type">> := <<"object">>} = Schema, Params) ->
     Props = maps:get(<<"properties">>, Schema, #{}),
     Required = maps:get(<<"required">>, Schema, []),
     validate_properties(Props, Required, Params);
-validate_params(_, _) ->
-    {error, <<"unsupported_schema">>}.
+validate_object(_, _) ->
+    {error, <<"invalid_type_expected_object">>}.
 
 %% iterate properties, validate each present or apply default
 validate_properties(Props, Required, Params) ->
@@ -83,7 +108,7 @@ validate_value(PropSchema, Value) when is_map(PropSchema) ->
                                        undefined -> #{<<"type">> => <<"object">>, <<"properties">> => #{}, <<"required">> => []};
                                        _ -> PropSchema
                                    end,
-                    case validate_params(NestedSchema, Value) of
+                    case validate_object(NestedSchema, Value) of
                         {ok, NormMap} -> check_enum(PropSchema, NormMap);
                         Err -> Err
                     end;

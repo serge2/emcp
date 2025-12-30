@@ -71,6 +71,20 @@ schema() ->
          mimeType => <<"text/plain">>,
          function => fun resources_read/2
        }
+    ],
+    prompts => [
+      #{ name => <<"code_review">>,
+         title => <<"Request Code Review">>,
+         description => <<"Asks the LLM to analyze code quality and suggest improvements">>,
+         arguments => [
+          #{
+            name => <<"code">>,
+            description => <<"The code to review">>,
+            required => true
+          }
+         ],
+         function => fun prompts_code_review/3
+       }
     ]
   }.
 
@@ -80,6 +94,18 @@ echo(_Name, #{<<"message">> := Msg}, _Extra) ->
 resources_read(URI, _Extra) ->
   Text = unicode:characters_to_binary(os:cmd("LC_ALL=C timedatectl | head -n4 | sed s/^[[:space:]]*//")),
   [#{<<"uri">> => URI, <<"mimeType">> => <<"text/plain">>, <<"text">> => Text}].
+
+prompts_code_review(_Name, #{<<"code">> := Code}, _Extra) ->
+  Prompt = unicode:characters_to_binary([<<"Please review this Python code:\n">>, Code]),
+  {ok, #{<<"description">> => <<"Code review prompt">>,
+         <<"messages">> => [
+          #{
+            <<"role">> => <<"user">>,
+            <<"content">> => #{<<"type">> => <<"text">>, <<"text">> => Prompt}
+          }
+         ]
+        }}.
+
 
 ```
 

@@ -11,6 +11,8 @@
          tools_call/3,
          resources_list/2,
          resources_read/3,
+         prompts_list/2,
+         prompts_get/3,
          cancelled/2
         ]).
 %%-export([start_link/0]).
@@ -49,6 +51,12 @@ resources_list(Pid, RequestId) ->
 resources_read(Pid, RequestId, Params) ->
     gen_server:call(Pid, {resources_read, RequestId, Params}).
 
+prompts_list(Pid, RequestId) ->
+    gen_server:call(Pid, {prompts_list, RequestId}).
+
+prompts_get(Pid, RequestId, Params) ->
+    gen_server:call(Pid, {prompts_get, RequestId, Params}).
+
 cancelled(Pid, Params) ->
     gen_server:call(Pid, {cancelled, Params}).
 
@@ -60,11 +68,15 @@ init([SessionId, {McpModule, ExtraParams}]) ->
     RawSchema = McpModule:schema(),
     ToolsRaw = maps:get(tools, RawSchema, maps:get(<<"tools">>, RawSchema, [])),
     ResourcesRaw = maps:get(resources, RawSchema, maps:get(<<"resources">>, RawSchema, [])),
+    PromptsRaw = maps:get(prompts, RawSchema, maps:get(<<"prompts">>, RawSchema, [])),
     ToolsSchema = convert_tools_for_client(ToolsRaw),
     ToolsArgsSchemas = generate_tools_args_schemas(ToolsSchema),
-    ResourcesSchema = convert_tools_for_client(ResourcesRaw), %% same conversion logic
     ToolsFuns = extract_tools_funs(ToolsRaw),
+    ResourcesSchema = convert_tools_for_client(ResourcesRaw), %% same conversion logic
     ResourcesFuns = extract_resources_funs(ResourcesRaw),
+    PromptsSchema = convert_tools_for_client(PromptsRaw), %% same conversion logic
+    PromptsArgsSchemas = generate_prompts_args_schemas(PromptsSchema),
+    PromptsFuns = extract_prompts_funs(PromptsRaw),
     {ok, #{ sid              => SessionId,
             output_buf       => [],
             output_req_id    => 1,
@@ -73,9 +85,12 @@ init([SessionId, {McpModule, ExtraParams}]) ->
             raw_schema       => RawSchema,
             tools_schema     => ToolsSchema,
             resources_schema => ResourcesSchema,
+            prompts_schema   => PromptsSchema,
             tools_args_schemas => ToolsArgsSchemas,
             tools_funs       => ToolsFuns,
             resources_funs   => ResourcesFuns,
+            prompts_args_schemas => PromptsArgsSchemas,
+            prompts_funs     => PromptsFuns,
             active_requests  => #{},
             active_requests_rev => #{} }}.
 
@@ -141,7 +156,7 @@ handle_call({tools_call, RequestId, #{<<"name">> := NameBin, <<"arguments">> := 
         fun() ->
             case maps:find(NameBin, ArgsSchemas) of
                 {ok, ArgsSchema} ->
-                    case emcp_schema_validator:validate_params(ArgsSchema, Args) of
+                    case emcp_schema_validator:validate_tools_params(ArgsSchema, Args) of
                         {ok, ValidatedArgs} ->
                             ToolsFuns = maps:get(tools_funs, State, #{}),
                             case maps:find(NameBin, ToolsFuns) of
@@ -180,7 +195,6 @@ handle_call({resources_list, RequestId}, From, #{resources_schema := Schema} = S
         end,
         From, State),
     {noreply, NewState};
-%    {reply, {ok, #{<<"resources">> => Schema}}, State};
 
 handle_call({resources_read, RequestId, #{<<"uri">> := URI}}, From, #{extra_params := ExtraParams} = State) ->
     NewState = spawn_request_worker(resources_read, RequestId,
@@ -191,6 +205,44 @@ handle_call({resources_read, RequestId, #{<<"uri">> := URI}}, From, #{extra_para
                     {ok, #{<<"contents">> => Fun(URI, ExtraParams)}};
                 error ->
                     {error, unsupported_resource}
+            end
+        end,
+        From, State),
+    {noreply, NewState};
+
+handle_call({prompts_list, RequestId}, From, #{prompts_schema := Schema} = State) ->
+    NewState = spawn_request_worker(prompts_list, RequestId,
+        fun() ->
+            {ok, #{<<"prompts">> => Schema}}
+        end,
+        From, State),
+    {noreply, NewState};
+
+handle_call({prompts_get, RequestId, #{<<"name">> := NameBin, <<"arguments">> := Args}}, From,
+             #{extra_params := ExtraParams, prompts_args_schemas := ArgsSchemas} = State) ->
+    NewState = spawn_request_worker(prompts_get, RequestId,
+        fun() ->
+            case maps:find(NameBin, ArgsSchemas) of
+                {ok, ArgsSchema} ->
+                    case emcp_schema_validator:validate_prompt_params(ArgsSchema, Args) of
+                        {ok, ValidatedArgs} ->
+                            PromptsFuns = maps:get(prompts_funs, State, #{}),
+                            case maps:find(NameBin, PromptsFuns) of
+                                {ok, Fun} ->
+                                    case Fun(NameBin, ValidatedArgs, ExtraParams) of
+                                        {ok, Result} ->
+                                            {ok, Result};
+                                        {error, _Error} ->
+                                                {error, internal}
+                                    end;
+                                error ->
+                                    {error, unsupported_prompt}
+                            end;
+                        {error, _ValidationError} ->
+                            {error, invalid_arguments}
+                    end;
+                error ->
+                    {error, unsupported_prompt}
             end
         end,
         From, State),
@@ -245,7 +297,7 @@ spawn_request_worker(Name, RequestId, Fun, From, #{active_requests := AR, active
         catch
             Class:Reason:Stacktrace ->
                 logger:error("Request worker error for ~p (~p): ~p, ~p~n~tp", [Name, RequestId, Class, Reason, Stacktrace]),
-                {error, {Class, Reason}}
+                {error, internal}
         end,
         gen_server:reply(From, Res)
     end, [monitor]),
@@ -347,6 +399,13 @@ extract_resources_funs(ResourcesRaw) when is_list(ResourcesRaw) ->
         maps:put(URI, Fun, Acc)
     end, #{}, ResourcesRaw).
 
+extract_prompts_funs(PromptsRaw) when is_list(PromptsRaw) ->
+    lists:foldl(fun(T, Acc) ->
+        Name = maps:get(name, T),
+        Fun = maps:get(function, T),
+        maps:put(Name, Fun, Acc)
+    end, #{}, PromptsRaw).
+
 %% helper used above
 get_schema_field(Schema, AtomKey, Default) ->
     case maps:find(AtomKey, Schema) of
@@ -365,3 +424,10 @@ generate_tools_args_schemas(ToolsSchema) when is_list(ToolsSchema) ->
         ArgsSchema = maps:get(<<"inputSchema">>, T, #{}),
         maps:put(Name, ArgsSchema, Acc)
     end, #{}, ToolsSchema).
+
+generate_prompts_args_schemas(PromptsSchema) when is_list(PromptsSchema) ->
+    lists:foldl(fun(T, Acc) ->
+        Name = maps:get(<<"name">>, T),
+        ArgsSchema = maps:get(<<"arguments">>, T, []),
+        maps:put(Name, ArgsSchema, Acc)
+    end, #{}, PromptsSchema).

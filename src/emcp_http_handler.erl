@@ -260,6 +260,42 @@ handle_post_call(#{<<"method">> := <<"resources/read">>, <<"params">> := Params}
         end
     end);
 
+handle_post_call(#{<<"method">> := <<"prompts/list">>} = Request, Headers, _) ->
+    do_in_session(Headers, fun(Pid) ->
+        RequestId = maps:get(<<"id">>, Request),
+        case emcp_session:prompts_list(Pid, RequestId) of
+            {ok, Result} ->
+                {reply,
+                 #{<<"jsonrpc">> => <<"2.0">>,
+                   <<"id">> => RequestId,
+                   <<"result">> => Result}};
+            {error, _Reason} ->
+                {error, 500,
+                 #{<<"jsonrpc">> => <<"2.0">>,
+                   <<"id">> => RequestId,
+                   <<"error">> => #{<<"code">> => -32000, <<"message">> => <<"Server error">>}}}
+        end
+    end);
+
+
+handle_post_call(#{<<"method">> := <<"prompts/get">>, <<"params">> := Params} = Request, Headers, _) ->
+    do_in_session(Headers, fun(Pid) ->
+        RequestId = maps:get(<<"id">>, Request),
+        case emcp_session:prompts_get(Pid, RequestId, Params) of
+            {ok, Result} ->
+                {reply,
+                    #{<<"jsonrpc">> => <<"2.0">>,
+                    <<"id">> => RequestId,
+                    <<"result">> => Result}};
+            {error, _Reason} ->
+                {error, 500,
+                    #{<<"jsonrpc">> => <<"2.0">>,
+                    <<"id">> => RequestId,
+                    <<"error">> => #{<<"code">> => -32000, <<"message">> => <<"Server error">>}}}
+        end
+    end);
+
+
 handle_post_call(Request, _Headers, _) ->
     {error, 400,
         #{<<"jsonrpc">> => <<"2.0">>,
