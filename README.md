@@ -187,6 +187,22 @@ curl -i -X POST http://localhost:8080/mcp \
   -H 'Mcp-Session-Id: <session-id>' \
   -d '{"jsonrpc":"2.0","id":4,"method":"resources/read","params":{"uri":"resource://sys/datetime"}}'
 ```
+### Get a list of prompts:
+```sh
+curl -i -X POST http://localhost:8080/mcp \
+  -H 'Content-Type: application/json' \
+  -H 'x-api-key: secret-key-1' \
+  -H 'Mcp-Session-Id: <session-id>' \
+  -d '{"jsonrpc":"2.0","id":5,"method":"prompts/list","params":{}}'
+```
+### Get a prompt:
+```sh
+curl -i -X POST http://localhost:8080/mcp \
+  -H 'Content-Type: application/json' \
+  -H 'x-api-key: secret-key-1' \
+  -H 'Mcp-Session-Id: <session-id>' \
+  -d '{"jsonrpc":"2.0","id":6,"method":"prompts/get","params":{"name": "code_review", "arguments": {"code": "def hello():\n    print('world')"}}}'
+```
 
 To add a tool, declare it in your MCP implementation module's `schema()` and implement the corresponding handler function in that module.
 
