@@ -4,14 +4,14 @@
 -include_lib("kernel/include/file.hrl").
 
 -export([init/2]).
--compile([export_all]).
+
 
 init(Req0, State) ->
     Method = cowboy_req:method(Req0),
     case Method of
         <<"POST">> -> handle_post(Req0, State);
         <<"GET">> -> handle_get(Req0, State);
-        <<"DELETE">> -> handle_get(Req0, State);
+        <<"DELETE">> -> handle_delete(Req0, State);
         _ ->
             Req = cowboy_req:reply(405, #{<<"content-type">> => <<"application/json">>},
                                    <<"{\"error\":\"method_not_allowed\"}">>, Req0),
@@ -26,8 +26,9 @@ handle_get(Req0, #{api_keys := ApiKeys} = _State) ->
             Body = <<"{\"ok\":true,\"service\":\"mcp_fs\",\"version\":\"0.1.0\"}">>,
             Req = cowboy_req:reply(200, #{<<"content-type">> => <<"application/json">>}, Body, Req0),
             {ok, Req, undefined};
-        {error, Status, BodyBin} ->
-            Req = cowboy_req:reply(Status, #{<<"content-type">> => <<"application/json">>}, BodyBin, Req0),
+        {error, Reason} ->
+            logger:error("Invalid API-Key:~ts.~nHTTP Request:~nHeaders:~n~p~n", [Reason, Headers]),
+            Req = cowboy_req:reply(401, #{<<"content-type">> => <<"plain/text">>}, Reason, Req0),
             {ok, Req, undefined}
     end.
 
@@ -55,21 +56,20 @@ handle_post(Req0, #{api_keys := ApiKeys, module := McpModule, extra_params := Ex
                             do_reply(Req1, Headers, ResponseStatus, #{}, jsx:encode(Reply), [])
                     catch
                         Class:Reason:Stack ->
-                            Error = #{<<"jsonrpc">> => <<"2.0">>,
-                                     <<"error">> => #{<<"code">> => -32603, <<"message">> => <<"Internal error">>,
-                                                      <<"data">> => io_lib:format("~p:~p ~p", [Class, Reason, Stack])}},
-                            Req4 = cowboy_req:reply(500, #{<<"content-type">> => <<"application/json">>}, jsx:encode(Error), Req1),
+                            logger:error("handle_post_jsonrpc exception:~n~p:~p ~tp", [Class, Reason, Stack]),
+                            Req4 = cowboy_req:reply(500, #{<<"content-type">> => <<"application/json">>},
+                                                    <<"{\"jsonrpc\":\"2.0\",\"error\":{\"code\":-32603,\"message\":\"Internal error\"}}">>, Req1),
                             {ok, Req4, undefined}
                     end;
 
                 false ->
                     Req2 = cowboy_req:reply(400, #{<<"content-type">> => <<"application/json">>},
-                                           <<"{\"jsonrpc\":\"2.0\",\"error\":{\"code\":-32700,\"message\":\"Parse error\"}}">>, Req1),
+                                            <<"{\"jsonrpc\":\"2.0\",\"error\":{\"code\":-32700,\"message\":\"Parse error\"}}">>, Req1),
                     {ok, Req2, undefined}
             end;
-        {error, Status, BodyBin} ->
-            logger:info("Error. HTTP Request:~nHeaders:~n~p~nBody:~n~ts~n", [Headers, Body]),
-            Req = cowboy_req:reply(Status, #{<<"content-type">> => <<"application/json">>}, BodyBin, Req1),
+        {error, Reason} ->
+            logger:error("Invalid API-Key:~ts.~nHTTP Request:~nHeaders:~n~p~nBody:~n~ts~n", [Reason, Headers, Body]),
+            Req = cowboy_req:reply(401, #{<<"content-type">> => <<"plain/text">>}, Reason, Req1),
             {ok, Req, undefined}
     end.
 
@@ -94,8 +94,9 @@ handle_delete(Req, #{api_keys := ApiKeys} = _State) ->
                     Req2 = cowboy_req:reply(400, #{<<"content-type">> => <<"application/json">>}, jsx:encode(Error), Req),
                     {ok, Req2, undefined}
             end;
-        {error, Status, BodyBin} ->
-            Req = cowboy_req:reply(Status, #{<<"content-type">> => <<"application/json">>}, BodyBin, Req),
+        {error, Reason} ->
+            logger:error("Invalid API-Key:~ts.~nHTTP Request:~nHeaders:~n~p~n", [Reason, Headers]),
+            Req = cowboy_req:reply(401, #{<<"content-type">> => <<"plain/text">>}, Reason, Req),
             {ok, Req, undefined}
     end.
 
@@ -440,14 +441,12 @@ parse_accept_type(TypeBin) ->
 validate_api_key(Headers, ApiKeys) when is_map(Headers), is_list(ApiKeys) ->
     case get_api_key_from_headers(Headers) of
         undefined ->
-            Body = jsx:encode(#{<<"error">> => <<"missing_api_key">>}),
-            {error, 401, Body};
+            {error, <<"missing_api_key">>};
         Key ->
             case lists:member(Key, ApiKeys) of
                 true -> ok;
                 false ->
-                    Body = jsx:encode(#{<<"error">> => <<"invalid_api_key">>}),
-                    {error, 401, Body}
+                    {error, <<"invalid_api_key">>}
             end
     end.
 
