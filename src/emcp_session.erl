@@ -13,7 +13,8 @@
          resources_read/3,
          prompts_list/2,
          prompts_get/3,
-         cancelled/2
+         cancelled/2,
+         ping/2
         ]).
 %%-export([start_link/0]).
 
@@ -59,6 +60,10 @@ prompts_get(Pid, RequestId, Params) ->
 
 cancelled(Pid, Params) ->
     gen_server:call(Pid, {cancelled, Params}).
+
+ping(Pid, RequestId) ->
+    gen_server:call(Pid, {ping, RequestId}).
+
 
 %% gen_server callbacks
 
@@ -132,7 +137,7 @@ handle_call({initialize, Params}, {Pid, _}=_From, State) ->
                                    client_capabilities => ClientCapabilites,
                                    client_pid => Pid}}
     catch
-        Class:Reason ->
+        Class:Reason:_Stacktrace ->
             {reply, {error, {Class, Reason}}, State}
     end;
 
@@ -258,6 +263,9 @@ handle_call({cancelled, #{<<"requestId">> := RequestId, <<"reason">> := Reason}}
             logger:info("No active request worker found for cancelled request ~p", [RequestId]),
             {reply, ok, State}
     end;
+
+handle_call({ping, _RequestId}, _From, State) ->
+    {reply, {ok, pong}, State};
 
 handle_call(Request, _From, State) ->
     logger:info("MCP session received unexpected call: ~p", [Request]),

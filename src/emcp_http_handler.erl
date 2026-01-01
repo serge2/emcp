@@ -296,6 +296,23 @@ handle_post_call(#{<<"method">> := <<"prompts/get">>, <<"params">> := Params} = 
         end
     end);
 
+handle_post_call(#{<<"method">> := <<"ping">>} = Request, Headers, _) ->
+    do_in_session(Headers, fun(Pid) ->
+        RequestId = maps:get(<<"id">>, Request),
+        case emcp_session:ping(Pid, RequestId) of
+            {ok, pong} ->
+                {reply,
+                    #{<<"jsonrpc">> => <<"2.0">>,
+                    <<"id">> => RequestId,
+                    <<"result">> => #{}}};
+            {error, _Reason} ->
+                {error, 500,
+                    #{<<"jsonrpc">> => <<"2.0">>,
+                    <<"id">> => RequestId,
+                    <<"error">> => #{<<"code">> => -32000, <<"message">> => <<"Server error">>}}}
+        end
+    end);
+
 
 handle_post_call(Request, _Headers, _) ->
     {error, 400,
