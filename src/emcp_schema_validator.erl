@@ -173,15 +173,9 @@ normalize_integer(_) -> {error, <<"invalid_type_expected_integer">>}.
 normalize_boolean(true) -> {ok, true};
 normalize_boolean(false) -> {ok, false};
 normalize_boolean(B) when is_binary(B) ->
-    case binary:lowercase(B) of
+    case string:lowercase(B) of
         <<"true">> -> {ok, true};
         <<"false">> -> {ok, false};
-        _ -> {error, <<"invalid_boolean_value">>}
-    end;
-normalize_boolean(L) when is_list(L) ->
-    case string:to_lower(L) of
-        "true" -> {ok, true};
-        "false" -> {ok, false};
         _ -> {error, <<"invalid_boolean_value">>}
     end;
 normalize_boolean(_) -> {error, <<"invalid_type_expected_boolean">>}.
