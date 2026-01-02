@@ -141,7 +141,7 @@ check_enum(PropSchema, Value) ->
     end.
 
 %% validate each array item against items schema
-validate_array_items(undefined, List, AccRev) ->
+validate_array_items(undefined, _List, AccRev) ->
     {ok, lists:reverse(AccRev)};
 validate_array_items(ItemsSchema, [H|T], AccRev) ->
     case validate_value(ItemsSchema, H) of

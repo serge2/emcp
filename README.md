@@ -58,31 +58,40 @@ schema() ->
     version => <<"0.1.0">>,
     description => <<"My app MCP implementation">>,
     tools => [
-      #{ name => <<"echo">>,
-         description => <<"Simple echo tool">>,
-         inputSchema => #{ type => object, properties => #{ <<"message">> => #{ type => string } }, required => [<<"message">>] },
+      #{ 
+         definition => #{
+            name => <<"echo">>,
+            description => <<"Simple echo tool">>,
+            inputSchema => #{ type => object, properties => #{ <<"message">> => #{ type => string } }, required => [<<"message">>] }
+         },
          function => fun echo/3
        }
     ],
     resources => [
-      #{ uri => <<"resource://sys/datetime">>,
-         name => <<"System date and time">>,
-         description => <<"Current local time, UTC time and time-zone">>,
-         mimeType => <<"text/plain">>,
+      #{ 
+         definition => #{
+            uri => <<"resource://sys/datetime">>,
+            name => <<"System date and time">>,
+            description => <<"Current local time, UTC time and time-zone">>,
+            mimeType => <<"text/plain">>
+         },
          function => fun resources_read/2
        }
     ],
     prompts => [
-      #{ name => <<"code_review">>,
-         title => <<"Request Code Review">>,
-         description => <<"Asks the LLM to analyze code quality and suggest improvements">>,
-         arguments => [
-          #{
-            name => <<"code">>,
-            description => <<"The code to review">>,
-            required => true
-          }
-         ],
+      #{
+         definition => #{
+            name => <<"code_review">>,
+            title => <<"Request Code Review">>,
+            description => <<"Asks the LLM to analyze code quality and suggest improvements">>,
+            arguments => [
+              #{
+                name => <<"code">>,
+                description => <<"The code to review">>,
+                required => true
+              }
+            ]
+         },
          function => fun prompts_code_review/3
        }
     ]

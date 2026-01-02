@@ -70,34 +70,35 @@ ping(Pid, RequestId) ->
 init([SessionId, {McpModule, ExtraParams}]) ->
     %% Initial state: read raw schema from impl module, prepare tools and resources schemas once
     logger:info("Starting MCP session ~p with module ~p", [SessionId, McpModule]),
-    RawSchema = McpModule:schema(),
-    ToolsRaw = maps:get(tools, RawSchema, maps:get(<<"tools">>, RawSchema, [])),
-    ResourcesRaw = maps:get(resources, RawSchema, maps:get(<<"resources">>, RawSchema, [])),
-    PromptsRaw = maps:get(prompts, RawSchema, maps:get(<<"prompts">>, RawSchema, [])),
-    ToolsSchema = convert_tools_for_client(ToolsRaw),
-    ToolsArgsSchemas = generate_tools_args_schemas(ToolsSchema),
-    ToolsFuns = extract_tools_funs(ToolsRaw),
-    ResourcesSchema = convert_tools_for_client(ResourcesRaw), %% same conversion logic
-    ResourcesFuns = extract_resources_funs(ResourcesRaw),
-    PromptsSchema = convert_tools_for_client(PromptsRaw), %% same conversion logic
-    PromptsArgsSchemas = generate_prompts_args_schemas(PromptsSchema),
-    PromptsFuns = extract_prompts_funs(PromptsRaw),
+    MCPSchema = McpModule:schema(),
+    Tools = maps:get(tools, MCPSchema, []),
+    Resources = maps:get(resources, MCPSchema, []),
+    Prompts = maps:get(prompts, MCPSchema, []),
+    ToolsDefinitions = get_definitions(Tools),
+    ToolsInputSchemas = get_input_schemas(ToolsDefinitions),
+    ToolsFuns = get_function(Tools),
+    ResourcesDefinitions = get_definitions(Resources), %% same conversion logic
+    ResourcesFuns = get_resources_function(Resources),
+    PromptsDefinitions = get_definitions(Prompts), %% same conversion logic
+    PromptsArgsSchemas = get_argument_schemas(PromptsDefinitions),
+    PromptsFuns = get_function(Prompts),
     {ok, #{ sid              => SessionId,
             output_buf       => [],
             output_req_id    => 1,
             mcp_module       => McpModule,
             extra_params     => ExtraParams,
-            raw_schema       => RawSchema,
-            tools_schema     => ToolsSchema,
-            resources_schema => ResourcesSchema,
-            prompts_schema   => PromptsSchema,
-            tools_args_schemas => ToolsArgsSchemas,
+            mcp_schema       => MCPSchema,     % Not used directly, but may be useful for debugging
+            tools_defs       => ToolsDefinitions,
+            resources_defs   => ResourcesDefinitions,
+            prompts_defs     => PromptsDefinitions,
+            tools_args_schemas => ToolsInputSchemas,
             tools_funs       => ToolsFuns,
             resources_funs   => ResourcesFuns,
             prompts_args_schemas => PromptsArgsSchemas,
             prompts_funs     => PromptsFuns,
             active_requests  => #{},
-            active_requests_rev => #{} }}.
+            active_requests_rev => #{}
+         }}.
 
 handle_call(stop, _From, State) ->
     {stop, normal, ok, State};
@@ -110,9 +111,9 @@ handle_call({initialize, Params}, {Pid, _}=_From, State) ->
         ClientCapabilites = maps:get(<<"capabilities">>, Params, #{}),
 
         RawSchema = maps:get(raw_schema, State, #{}),
-        Name = get_schema_field(RawSchema, name, maps:get(<<"name">>, RawSchema, <<"MCP Server">>)),
-        Version = get_schema_field(RawSchema, version, maps:get(<<"version">>, RawSchema, <<"undefined">>)),
-        Description = get_schema_field(RawSchema, description, maps:get(<<"description">>, RawSchema, <<>>)),
+        Name = maps:get(name, RawSchema, <<"MCP Server">>),
+        Version = maps:get(version, RawSchema, <<"undefined">>),
+        Description = maps:get(description, RawSchema, <<>>),
 
         ServerInfo =
             #{ <<"name">> => Name,
@@ -146,10 +147,10 @@ handle_call(initialized, _From, State) ->
     State2 = check_roots(State),
     {reply, ok, State2#{initialized => true}};
 
-handle_call({tools_list, RequestId}, From, #{tools_schema := Schema} = State) ->
+handle_call({tools_list, RequestId}, From, #{tools_defs := Definitions} = State) ->
     NewState = spawn_request_worker(tools_list, RequestId,
         fun() ->
-            {ok, #{<<"tools">> => Schema}}
+            {ok, #{<<"tools">> => Definitions}}
         end,
         From, State),
     {noreply, NewState};
@@ -193,10 +194,10 @@ handle_call({tools_call, RequestId, #{<<"name">> := NameBin, <<"arguments">> := 
         From, State),
     {noreply, NewState};
 
-handle_call({resources_list, RequestId}, From, #{resources_schema := Schema} = State) ->
+handle_call({resources_list, RequestId}, From, #{resources_defs := Definitions} = State) ->
     NewState = spawn_request_worker(resources_list, RequestId,
         fun() ->
-            {ok, #{<<"resources">> => Schema}}
+            {ok, #{<<"resources">> => Definitions}}
         end,
         From, State),
     {noreply, NewState};
@@ -215,10 +216,10 @@ handle_call({resources_read, RequestId, #{<<"uri">> := URI}}, From, #{extra_para
         From, State),
     {noreply, NewState};
 
-handle_call({prompts_list, RequestId}, From, #{prompts_schema := Schema} = State) ->
+handle_call({prompts_list, RequestId}, From, #{prompts_defs := Definitions} = State) ->
     NewState = spawn_request_worker(prompts_list, RequestId,
         fun() ->
-            {ok, #{<<"prompts">> => Schema}}
+            {ok, #{<<"prompts">> => Definitions}}
         end,
         From, State),
     {noreply, NewState};
@@ -343,97 +344,32 @@ put_request(State, Req) ->
     State#{output_buf => NewBuf,
            output_req_id => ReqId + 1}.
 
-%% Convert schema tools (stored with atom keys for fixed words) to client-friendly maps
--spec convert_tools_for_client(list()) -> list().
-convert_tools_for_client(Tools) when is_list(Tools) ->
-    [convert_map_for_client(T) || T <- Tools];
-convert_tools_for_client(_) -> [].
 
--spec convert_map_for_client(map()) -> map().
-convert_map_for_client(Map) when is_map(Map) ->
-    lists:foldl(fun({K,V}, Acc) ->
-                        case K of
-                            function -> Acc; % omit implementation function
-                            _ ->
-                                NewK = key_to_bin(K),
-                                NewV = convert_value_for_client(V),
-                                maps:put(NewK, NewV, Acc)
-                        end
-                end, #{}, maps:to_list(Map));
-convert_map_for_client(_) -> #{}.
+get_definitions(List) when is_list(List) ->
+    [jsx:decode(jsx:encode(Def), []) || #{definition := Def} <- List].
 
-%% key_to_bin: convert atom keys (fixed keywords) to binary, keep binary keys (user fields) as-is
-key_to_bin(K) when is_atom(K) ->
-    unicode:characters_to_binary(atom_to_list(K));
-key_to_bin(K) when is_binary(K) ->
-    K;
-key_to_bin(K) when is_list(K) ->
-    unicode:characters_to_binary(K);
-key_to_bin(Other) ->
-    unicode:characters_to_binary(io_lib:format("~p", [Other])).
-
-%% convert_value_for_client: recursively convert schema values (atoms -> binaries, maps -> converted maps, lists -> converted lists)
-convert_value_for_client(V) when is_map(V) ->
-    % convert nested map but drop any 'function' keys
-    lists:foldl(fun({K2,V2}, Acc) ->
-                        case K2 of
-                            function -> Acc;
-                            _ ->
-                                maps:put(key_to_bin(K2), convert_value_for_client(V2), Acc)
-                        end
-                end, #{}, maps:to_list(V));
-convert_value_for_client(List) when is_list(List) ->
-    [convert_value_for_client(E) || E <- List];
-convert_value_for_client(A) when is_atom(A) ->
-    unicode:characters_to_binary(atom_to_list(A));
-convert_value_for_client(B) when is_binary(B) ->
-    B;
-convert_value_for_client(Other) ->
-    Other.
-
-%% extract_tools_funs: build map of tool name => function from raw tools schema
-extract_tools_funs(ToolsRaw) when is_list(ToolsRaw) ->
-    lists:foldl(fun(T, Acc) ->
-        Name = maps:get(name, T),
-        Fun = maps:get(function, T),
-        maps:put(Name, Fun, Acc)
-    end, #{}, ToolsRaw).
-
-%% extract_resources_funs: build map of resource uri => function from raw resources schema
-extract_resources_funs(ResourcesRaw) when is_list(ResourcesRaw) ->
-    lists:foldl(fun(R, Acc) ->
-        URI = maps:get(uri, R),
+get_function(List) when is_list(List) ->
+    lists:foldl(fun(#{definition := Def} = R, Acc) ->
+        Name = maps:get(name, Def),
         Fun = maps:get(function, R),
-        maps:put(URI, Fun, Acc)
-    end, #{}, ResourcesRaw).
-
-extract_prompts_funs(PromptsRaw) when is_list(PromptsRaw) ->
-    lists:foldl(fun(T, Acc) ->
-        Name = maps:get(name, T),
-        Fun = maps:get(function, T),
         maps:put(Name, Fun, Acc)
-    end, #{}, PromptsRaw).
+    end, #{}, List).
 
-%% helper used above
-get_schema_field(Schema, AtomKey, Default) ->
-    case maps:find(AtomKey, Schema) of
-        {ok, V} -> V;
-        error ->
-            BinKey = unicode:characters_to_binary(atom_to_list(AtomKey)),
-            case maps:find(BinKey, Schema) of
-                {ok, V2} -> V2;
-                error -> Default
-            end
-    end.
+get_resources_function(List) when is_list(List) ->
+    lists:foldl(fun(#{definition := Def} = R, Acc) ->
+        Name = maps:get(uri, Def),
+        Fun = maps:get(function, R),
+        maps:put(Name, Fun, Acc)
+    end, #{}, List).
 
-generate_tools_args_schemas(ToolsSchema) when is_list(ToolsSchema) ->
+get_input_schemas(ToolsSchema) when is_list(ToolsSchema) ->
     lists:foldl(fun(T, Acc) ->
         Name = maps:get(<<"name">>, T),
         ArgsSchema = maps:get(<<"inputSchema">>, T, #{}),
         maps:put(Name, ArgsSchema, Acc)
     end, #{}, ToolsSchema).
 
-generate_prompts_args_schemas(PromptsSchema) when is_list(PromptsSchema) ->
+get_argument_schemas(PromptsSchema) when is_list(PromptsSchema) ->
     lists:foldl(fun(T, Acc) ->
         Name = maps:get(<<"name">>, T),
         ArgsSchema = maps:get(<<"arguments">>, T, []),
