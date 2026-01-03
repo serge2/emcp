@@ -5,6 +5,8 @@
 
 all() -> [
     initialize_test,
+    invalid_api_key_test,
+    invalid_session_test,
     tools_list_test,
     tools_call_echo_test,
     tools_call_sleep_test,
@@ -12,6 +14,7 @@ all() -> [
     resources_list_test,
     resources_read_test,
     prompts_list_test,
+    prompts_get_test,
     ping_test,
     cleanup_test
 ].
@@ -56,9 +59,34 @@ initialize_test(Config) ->
     {ok, {{_Prot2, 202, _}, _H2, _B2}} = httpc:request(post, {Url, HeadersNotif, "application/json", Notif}, [], [{body_format, binary}]),
     {save_config, [{session, Sess}]}.
 
+invalid_api_key_test(Config) ->
+    Url = cfg_get(Config, url),
+    %% preserve session saved by initialize_test
+    {initialize_test, SavedConfig} = proplists:get_value(saved_config, Config, []),
+    Sess = cfg_get(SavedConfig, session),
+    %% Send POST initialize with bad API key and expect 401 plain/text body
+    InitReq = jsx:encode(#{<<"jsonrpc">> => <<"2.0">>, <<"id">> => 1234, <<"method">> => <<"initialize">>, <<"params">> => #{}}),
+    {ok, {{_P,401,_}, _H, Body}} = httpc:request(post, {Url, [{"x-api-key", "wrong"}], "application/json", InitReq}, [], [{body_format, binary}]),
+    ?assertEqual(<<"invalid_api_key">>, Body),
+    {save_config, [{session, Sess}]}.
+
+invalid_session_test(Config) ->
+    Url = cfg_get(Config, url),
+    {invalid_api_key_test, SavedConfig} = proplists:get_value(saved_config, Config, []),
+    Sess = cfg_get(SavedConfig, session),
+    %% Use valid API key but invalid session id
+    HeadersBadSess = [{"x-api-key", "demo"}, {"mcp-session-id", "does-not-exist"}],
+    ToolsReq = jsx:encode(#{<<"jsonrpc">> => <<"2.0">>, <<"id">> => 999, <<"method">> => <<"tools/list">>, <<"params">> => #{}}),
+    {ok, {{_P,400,_}, _H, Body}} = httpc:request(post, {Url, HeadersBadSess, "application/json", ToolsReq}, [], [{body_format, binary}]),
+    Resp = jsx:decode(Body, [return_maps]),
+    Error = maps:get(<<"error">>, Resp),
+    ?assertEqual(-32001, maps:get(<<"code">>, Error)),
+    ?assertEqual(<<"Invalid session">>, maps:get(<<"message">>, Error)),
+    {save_config, [{session, Sess}] }.
+
 tools_list_test(Config) ->
     Url = cfg_get(Config, url),
-    {initialize_test, SavedConfig} = proplists:get_value(saved_config, Config, []),
+    {invalid_session_test, SavedConfig} = proplists:get_value(saved_config, Config, []),
     Sess = cfg_get(SavedConfig, session),
     ToolsReq = jsx:encode(#{<<"jsonrpc">> => <<"2.0">>, <<"id">> => 2, <<"method">> => <<"tools/list">>, <<"params">> => #{}}),
     HeadersTools = [{"x-api-key", "demo"}, {"mcp-session-id", Sess}],
@@ -167,9 +195,23 @@ prompts_list_test(Config) ->
     ?assert(lists:any(fun(P) -> maps:get(<<"name">>, P, <<"">>) == <<"code_review">> end, Prompts)),
     {save_config, [{session, Sess}]}.
 
-ping_test(Config) ->
+prompts_get_test(Config) ->
     Url = cfg_get(Config, url),
     {prompts_list_test, SavedConfig} = proplists:get_value(saved_config, Config, []),
+    Sess = cfg_get(SavedConfig, session),
+    Req = jsx:encode(#{<<"jsonrpc">> => <<"2.0">>, <<"id">> => 11, <<"method">> => <<"prompts/get">>, <<"params">> => #{<<"name">> => <<"code_review">>, <<"arguments">> => #{<<"code">> => <<"print(\'hello\')">>} } }),
+    Headers = [{"x-api-key", "demo"}, {"mcp-session-id", Sess}],
+    {ok, {{_P,200,_}, _H, Body}} = httpc:request(post, {Url, Headers, "application/json", Req}, [], [{body_format, binary}]),
+    Resp = jsx:decode(Body, [return_maps]),
+    Result = maps:get(<<"result">>, Resp),
+    ?assertEqual(<<"Code review prompt">>, maps:get(<<"description">>, Result)),
+    Messages = maps:get(<<"messages">>, Result, []),
+    ?assert(lists:any(fun(M) -> maps:get(<<"role">>, M, <<"">>) == <<"user">> end, Messages)),
+    {save_config, [{session, Sess}]}.
+
+ping_test(Config) ->
+    Url = cfg_get(Config, url),
+    {prompts_get_test, SavedConfig} = proplists:get_value(saved_config, Config, []),
     Sess = cfg_get(SavedConfig, session),
     Req = jsx:encode(#{<<"jsonrpc">> => <<"2.0">>, <<"id">> => 7, <<"method">> => <<"ping">>, <<"params">> => #{}}),
     Headers = [{"x-api-key", "demo"}, {"mcp-session-id", Sess}],
@@ -225,9 +267,6 @@ start_emcp_listener(Name, Port) ->
         false
     end.
 
-%% Ensure header values are charlists (httpc expects strings/lists)
-header_string(V) when is_binary(V) -> binary_to_list(V);
-header_string(V) -> V.
 
 %% Ensure header name/values as binaries for cowboy/httpc compatibility
 header_binary(V) when is_binary(V) -> V;
@@ -236,14 +275,10 @@ header_binary(V) when is_list(V) -> unicode:characters_to_binary(V).
 
 find_header_case_insensitive(Headers, Name) when is_list(Headers) ->
     NameLower = string:to_lower(Name),
-    LowKey = fun(K) -> case K of
-                            K2 when is_binary(K2) -> string:to_lower(binary_to_list(K2));
-                            K2 when is_list(K2) -> string:to_lower(K2)
-                        end end,
     case lists:foldl(fun({K,V}, Acc) ->
                          case Acc of
                              {ok,_} -> Acc;
-                             _ -> case LowKey(K) == NameLower of
+                             _ -> case string:to_lower(K) == NameLower of
                                       true -> {ok, header_binary(V)};
                                       false -> Acc
                                   end

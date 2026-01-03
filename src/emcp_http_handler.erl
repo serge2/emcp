@@ -52,7 +52,7 @@ handle_post(Req0, #{api_keys := ApiKeys, module := McpModule, extra_params := Ex
                             %% Это инициализация - добавляем заголовок с SessionId
                             OutHeaders = #{<<"Mcp-Session-Id">> => SessionId},
                             do_reply(Req1, Headers, 200, OutHeaders, jsx:encode(Reply), OutputBuf);
-                            {error, ResponseStatus, Reply} ->
+                        {error, ResponseStatus, Reply} ->
                             do_reply(Req1, Headers, ResponseStatus, #{}, jsx:encode(Reply), [])
                     catch
                         Class:Reason:Stack ->
