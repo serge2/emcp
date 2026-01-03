@@ -3,7 +3,18 @@
 -include_lib("eunit/include/eunit.hrl").
 -compile(export_all).
 
-all() -> [initialize_test, tools_list_test, tools_call_echo_test, resources_read_test, cleanup_test].
+all() -> [
+    initialize_test,
+    tools_list_test,
+    tools_call_echo_test,
+    tools_call_sleep_test,
+    sleep_cancel_test,
+    resources_list_test,
+    resources_read_test,
+    prompts_list_test,
+    ping_test,
+    cleanup_test
+].
 
 %% Common test suite for emcp framework using the example MCP implementation from README
 
@@ -14,6 +25,7 @@ init_per_suite(Config) ->
     Name = list_to_atom("emcp_ct_" ++ integer_to_list(Port)),
     ?assert(start_emcp_listener(Name, Port)), %% listener with demo api key for tests
     Url = lists:flatten(io_lib:format("http://127.0.0.1:~p/mcp", [Port])),
+    httpc:set_options([{max_keep_alive_length, 0}, {max_sessions, 10}]),
     Config ++ [{port, Port}, {listener, Name}, {url, Url}].
 
 end_per_suite(Config) ->
@@ -38,6 +50,10 @@ initialize_test(Config) ->
     {ok, Sess} = find_header_case_insensitive(Headers, "mcp-session-id"),
     Resp = jsx:decode(Body, [return_maps]),
     ?assert(is_map(maps:get(<<"result">>, Resp, #{}))),
+    %% send notification from client that initialization is complete
+    Notif = jsx:encode(#{<<"jsonrpc">> => <<"2.0">>, <<"method">> => <<"notifications/initialized">>}),
+    HeadersNotif = [{"x-api-key", "demo"}, {"mcp-session-id", Sess}],
+    {ok, {{_Prot2, 202, _}, _H2, _B2}} = httpc:request(post, {Url, HeadersNotif, "application/json", Notif}, [], [{body_format, binary}]),
     {save_config, [{session, Sess}]}.
 
 tools_list_test(Config) ->
@@ -66,10 +82,69 @@ tools_call_echo_test(Config) ->
     ?assertEqual(<<"Hello CT">>, maps:get(<<"text">>, Content)),
     {save_config, [{session, Sess}]}.
 
+tools_call_sleep_test(Config) ->
+    Url = cfg_get(Config, url),
+    {tools_call_echo_test, SavedConfig} = proplists:get_value(saved_config, Config, []),
+    Sess = cfg_get(SavedConfig, session),
+    CallReq = jsx:encode(#{<<"jsonrpc">> => <<"2.0">>, <<"id">> => 8, <<"method">> => <<"tools/call">>,
+                           <<"params">> => #{ <<"name">> => <<"sleep">>, <<"arguments">> => #{ <<"duration_ms">> => 50 } } }),
+    HeadersCall = [{"x-api-key", "demo"}, {"mcp-session-id", Sess}],
+    {ok, {{_P,200,_}, _H3, BodyCall}} = httpc:request(post, {Url, HeadersCall, "application/json", CallReq}, [], [{body_format, binary}]),
+    RespCall = jsx:decode(BodyCall, [return_maps]),
+    ResultCall = maps:get(<<"result">>, RespCall),
+    Content = maps:get(<<"content">>, ResultCall),
+    ?assertEqual(50, maps:get(<<"slept_ms">>, Content)),
+    {save_config, [{session, Sess}]}.
+
+sleep_cancel_test(Config) ->
+    Url = cfg_get(Config, url),
+    {tools_call_sleep_test, SavedConfig} = proplists:get_value(saved_config, Config, []),
+    Sess = cfg_get(SavedConfig, session),
+    %% Start a long sleep asynchronously
+    CallReq = jsx:encode(#{<<"jsonrpc">> => <<"2.0">>, <<"id">> => 9, <<"method">> => <<"tools/call">>,
+                           <<"params">> => #{ <<"name">> => <<"sleep">>, <<"arguments">> => #{ <<"duration_ms">> => 2000 } } }),
+    HeadersCall = [{"x-api-key", "demo"}, {"mcp-session-id", Sess}],
+    {ok, ReqId} = httpc:request(post, {Url, HeadersCall, "application/json", CallReq}, [], [{body_format, binary}, {sync, false}, {receiver, self()}]),
+    %% Give the worker a moment to start
+    timer:sleep(100),
+    %% Send cancellation notification for request id=9
+    Notif = jsx:encode(#{<<"jsonrpc">> => <<"2.0">>, <<"method">> => <<"notifications/cancelled">>,
+                        <<"params">> => #{ <<"requestId">> => 9, <<"reason">> => <<"test-cancel">>} }),
+    HeadersNotif = [{"x-api-key", "demo"}, {"mcp-session-id", Sess}],
+    logger:warning("Sending cancellation notification for request 9"),
+    {ok, {{_P2,202,_}, _H2, _B2}} = httpc:request(post, {Url, HeadersNotif, "application/json", Notif}, [], [{body_format, binary}]),
+    %% Attempt to receive the response; it should fail/timeout because worker was cancelled
+    receive
+        {http, {ReqId, Result}} ->
+            ?assert(false, io_lib:format("Expected no response, but got: ~p", [Result]))
+    after 2000 ->
+            ok
+    end,
+    %% Ensure session still usable
+    ToolsReq = jsx:encode(#{<<"jsonrpc">> => <<"2.0">>, <<"id">> => 10, <<"method">> => <<"tools/list">>, <<"params">> => #{}}),
+    {ok, {{_P4,200,_}, _H4, BodyTools}} = httpc:request(post, {Url, HeadersCall, "application/json", ToolsReq}, [], [{body_format, binary}]),
+    RespTools = jsx:decode(BodyTools, [return_maps]),
+    Tools = maps:get(<<"tools">>, maps:get(<<"result">>, RespTools, #{}), []),
+    ?assert(lists:any(fun(M) -> maps:get(<<"name">>, M) == <<"sleep">> end, Tools)),
+    {save_config, [{session, Sess}]}.
+
+resources_list_test(Config) ->
+    Url = cfg_get(Config, url),
+    {sleep_cancel_test, SavedConfig} = proplists:get_value(saved_config, Config, []),
+    Sess = cfg_get(SavedConfig, session),
+    Req = jsx:encode(#{<<"jsonrpc">> => <<"2.0">>, <<"id">> => 5, <<"method">> => <<"resources/list">>, <<"params">> => #{}}),
+    Headers = [{"x-api-key", "demo"}, {"mcp-session-id", Sess}],
+    {ok, {{_P,200,_}, _H, Body}} = httpc:request(post, {Url, Headers, "application/json", Req}, [], [{body_format, binary}]),
+    Resp = jsx:decode(Body, [return_maps]),
+    Resources = maps:get(<<"resources">>, maps:get(<<"result">>, Resp, #{}), []),
+    ?assert(is_list(Resources)),
+    ?assert(lists:any(fun(R) -> maps:get(<<"uri">>, R, <<"">>) == <<"resource://sys/datetime">> end, Resources)),
+    {save_config, [{session, Sess}]}.
+
 resources_read_test(Config) ->
     ct:log("resources_read_test Config: ~p~n", [Config]),
     Url = cfg_get(Config, url),
-    {tools_call_echo_test, SavedConfig} = proplists:get_value(saved_config, Config, []),
+    {resources_list_test, SavedConfig} = proplists:get_value(saved_config, Config, []),
     Sess = cfg_get(SavedConfig, session),
     Req = jsx:encode(#{<<"jsonrpc">> => <<"2.0">>, <<"id">> => 4, <<"method">> => <<"resources/read">>, <<"params">> => #{<<"uri">> => <<"resource://sys/datetime">>} }),
     HeadersRead = [{"x-api-key", "demo"}, {"mcp-session-id", Sess}],
@@ -77,12 +152,37 @@ resources_read_test(Config) ->
     Resp = jsx:decode(Body, [return_maps]),
     Contents = maps:get(<<"contents">>, maps:get(<<"result">>, Resp)),
     ?assert(is_list(Contents)),
-     {save_config, [{session, Sess}]}.
+    {save_config, [{session, Sess}]}.
+
+prompts_list_test(Config) ->
+    Url = cfg_get(Config, url),
+    {resources_read_test, SavedConfig} = proplists:get_value(saved_config, Config, []),
+    Sess = cfg_get(SavedConfig, session),
+    Req = jsx:encode(#{<<"jsonrpc">> => <<"2.0">>, <<"id">> => 6, <<"method">> => <<"prompts/list">>, <<"params">> => #{}}),
+    Headers = [{"x-api-key", "demo"}, {"mcp-session-id", Sess}],
+    {ok, {{_P,200,_}, _H, Body}} = httpc:request(post, {Url, Headers, "application/json", Req}, [], [{body_format, binary}]),
+    Resp = jsx:decode(Body, [return_maps]),
+    Prompts = maps:get(<<"prompts">>, maps:get(<<"result">>, Resp, #{}), []),
+    ?assert(is_list(Prompts)),
+    ?assert(lists:any(fun(P) -> maps:get(<<"name">>, P, <<"">>) == <<"code_review">> end, Prompts)),
+    {save_config, [{session, Sess}]}.
+
+ping_test(Config) ->
+    Url = cfg_get(Config, url),
+    {prompts_list_test, SavedConfig} = proplists:get_value(saved_config, Config, []),
+    Sess = cfg_get(SavedConfig, session),
+    Req = jsx:encode(#{<<"jsonrpc">> => <<"2.0">>, <<"id">> => 7, <<"method">> => <<"ping">>, <<"params">> => #{}}),
+    Headers = [{"x-api-key", "demo"}, {"mcp-session-id", Sess}],
+    {ok, {{_P,200,_}, _H, Body}} = httpc:request(post, {Url, Headers, "application/json", Req}, [], [{body_format, binary}]),
+    Resp = jsx:decode(Body, [return_maps]),
+    Result = maps:get(<<"result">>, Resp, #{}),
+    ?assertEqual(#{}, Result),
+    {save_config, [{session, Sess}] }.
 
 cleanup_test(Config) ->
     ct:log("cleanup_test Config: ~p~n", [Config]),
     Url = cfg_get(Config, url),
-    {resources_read_test, SavedConfig} = proplists:get_value(saved_config, Config, []),
+    {ping_test, SavedConfig} = proplists:get_value(saved_config, Config, []),
     Sess = cfg_get(SavedConfig, session),
     {ok, {{_P,200,_}, _H, _B}} = httpc:request(delete, {Url, [{"x-api-key", "demo"}, {"mcp-session-id", Sess}]}, [], [{body_format, binary}]),
     catch emcp:stop(cfg_get(Config, listener)),

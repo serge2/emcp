@@ -6,9 +6,11 @@
     #{
       name => binary(),
       version => binary(),
-      description => binary(),
-      tools => [],
-      resources => []
+      title := binary(),
+      instructions := binary(),
+      tools := [],
+      resources := [],
+      prompts := []
      }.
 
 

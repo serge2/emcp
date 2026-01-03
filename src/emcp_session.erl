@@ -106,40 +106,18 @@ handle_call(stop, _From, State) ->
 handle_call(get_output_buf, _From, #{output_buf := OutputBuf}=State) ->
     {reply, lists:reverse(OutputBuf), State#{output_buf => []}};
 
-handle_call({initialize, Params}, {Pid, _}=_From, State) ->
+handle_call({initialize, Params}, _From, State) ->
     try
+        InitializeResult = prepare_initialize_result(State),
         ClientCapabilites = maps:get(<<"capabilities">>, Params, #{}),
-
-        RawSchema = maps:get(raw_schema, State, #{}),
-        Name = maps:get(name, RawSchema, <<"MCP Server">>),
-        Version = maps:get(version, RawSchema, <<"undefined">>),
-        Description = maps:get(description, RawSchema, <<>>),
-
-        ServerInfo =
-            #{ <<"name">> => Name,
-               <<"version">> => Version,
-               <<"description">> => Description
-            },
-
-        Resp =
-            #{
-                <<"protocolVersion">> => <<"2025-06-18">>,
-                <<"capabilities">> => #{
-                    <<"logging">> => #{},
-                    <<"prompts">> => #{},
-                    <<"resources">> => #{},
-                    <<"tools">> => #{}
-                },
-                <<"serverInfo">> => ServerInfo,
-                <<"instructions">> => <<"Optional instructions for the client">>
-            },
-        {reply, {ok, Resp}, State#{initialized => true,
-                                   proto => <<"2025-06-18">>,
-                                   client_capabilities => ClientCapabilites,
-                                   client_pid => Pid}}
+        {reply, {ok, InitializeResult},
+         State#{initialized => true,
+                proto => <<"2025-06-18">>,
+                client_capabilities => ClientCapabilites}}
     catch
-        Class:Reason:_Stacktrace ->
-            {reply, {error, {Class, Reason}}, State}
+        Class:Reason:Stacktrace ->
+            logger:error("Initialization error. Params: ~tp~n~p, ~p~n~tp", [Params, Class, Reason, Stacktrace]),
+            {reply, {error, internal}, State}
     end;
 
 handle_call(initialized, _From, State) ->
@@ -257,11 +235,11 @@ handle_call({prompts_get, RequestId, #{<<"name">> := NameBin, <<"arguments">> :=
 handle_call({cancelled, #{<<"requestId">> := RequestId, <<"reason">> := Reason}}, _From, #{active_requests := AR} = State) ->
     case maps:find(RequestId, AR) of
         {ok, Pid} ->
-            logger:info("Cancelling active request ~p (worker ~p), reason: ~p", [RequestId, Pid, Reason]),
+            logger:warning("Cancelling active request ~p (worker ~p), reason: ~p", [RequestId, Pid, Reason]),
             exit(Pid, kill),
             {reply, ok, State};
         error ->
-            logger:info("No active request worker found for cancelled request ~p", [RequestId]),
+            logger:warning("No active request worker found for cancelled request ~p", [RequestId]),
             {reply, ok, State}
     end;
 
@@ -314,6 +292,57 @@ spawn_request_worker(Name, RequestId, Fun, From, #{active_requests := AR, active
            active_requests_rev => AR_Rev#{Pid => RequestId}}.   
 
 
+
+
+prepare_initialize_result(#{mcp_schema := MCPSchema}) ->
+    ServerInfo = prepare_server_info(MCPSchema),
+    OptionalList = [{'_meta', <<"_meta">>},
+                    {instructions, <<"instructions">>}],
+    MandatoryItems= #{
+        <<"protocolVersion">> => <<"2025-06-18">>,
+        <<"capabilities">> => #{
+            % <<"completions"> => #{},
+            % <<"experimental">> => #{},
+            % <<"logging">> => #{},
+            <<"prompts">> => #{},
+            <<"resources">> => #{},
+            <<"tools">> => #{}
+        },
+        <<"serverInfo">> => ServerInfo
+    },
+    lists:foldl(fun({Key, BinKey}, Acc) ->
+                    case maps:find(Key, MCPSchema) of
+                        {ok, Val} ->
+                            maps:put(BinKey, Val, Acc);
+                        error ->
+                            Acc
+                    end
+                end, MandatoryItems, OptionalList).
+
+
+
+prepare_server_info(MCPSchema) ->
+    MandatoryList = [{name, <<"name">>},
+                     {version, <<"version">>}],
+    OptionalList  = [{title, <<"title">>}],
+
+    I1 = lists:foldl(fun({Key, BinKey}, Acc) ->
+                        case maps:find(Key, MCPSchema) of
+                            {ok, Val} ->
+                                maps:put(BinKey, Val, Acc);
+                            error ->
+                                error({no_mandatory_key, Key})
+                        end
+                    end, #{}, MandatoryList),
+    I2 = lists:foldl(fun({Key, BinKey}, Acc) ->
+                        case maps:find(Key, MCPSchema) of
+                            {ok, Val} ->
+                                maps:put(BinKey, Val, Acc);
+                            error ->
+                                Acc
+                        end
+                    end, I1, OptionalList),
+    maps:merge(I1, I2).
 
 %% find_resources_fun/2: try direct key lookup, otherwise compare canonical binary form of keys
 -spec find_resources_fun(map(), binary()) -> {ok, term()} | error.
