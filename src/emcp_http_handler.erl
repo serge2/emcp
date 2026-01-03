@@ -426,7 +426,7 @@ parse_accept_header(AcceptHeader) when is_binary(AcceptHeader) ->
     %% Преобразуем AcceptHeader в строку и разбиваем по запятым
     Types0 = binary:split(AcceptHeader, <<",">>, [global]),
     %% Парсим каждый тип, извлекая media type и q-параметр
-    Types1 = [parse_accept_type(string:trim(Type, leading, [<<" ">>]) ) || Type <- Types0],
+    Types1 = [parse_accept_type(string:trim(Type, both, " ") ) || Type <- Types0],
     %% Сортируем по q (приоритету), по убыванию
     Sorted = lists:sort(fun({_, Q1}, {_, Q2}) -> Q1 > Q2 end, Types1),
     %% Возвращаем только типы
