@@ -56,7 +56,7 @@ schema() ->
   #{
     name => <<"My App MCP">>,
     version => <<"0.1.0">>,
-    description => <<"My app MCP implementation">>,
+    title => <<"My app MCP implementation">>,
     tools => [
       #{ 
          definition => #{

@@ -13,6 +13,7 @@ init(Req0, State) ->
         <<"GET">> -> handle_get(Req0, State);
         <<"DELETE">> -> handle_delete(Req0, State);
         _ ->
+            logger:error("Unsupported method: ~ts", [Method]),
             Req = cowboy_req:reply(405, #{<<"content-type">> => <<"application/json">>},
                                    <<"{\"error\":\"method_not_allowed\"}">>, Req0),
             {ok, Req, undefined}
