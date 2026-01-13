@@ -64,6 +64,7 @@ handle_post(Req0, #{api_keys := ApiKeys, module := McpModule, extra_params := Ex
                     end;
 
                 false ->
+                    logger:error("Faild to decode request body. Headers:~n~tp~nBosy:~n~ts~n", [Headers, Body]),
                     Req2 = cowboy_req:reply(400, #{<<"content-type">> => <<"application/json">>},
                                             <<"{\"jsonrpc\":\"2.0\",\"error\":{\"code\":-32700,\"message\":\"Parse error\"}}">>, Req1),
                     {ok, Req2, undefined}
