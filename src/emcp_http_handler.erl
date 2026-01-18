@@ -107,8 +107,7 @@ handle_delete(Req, #{api_keys := ApiKeys} = _State) ->
 do_reply(Req, InHeaders, ResponseStatus, OutHeaders, RespBin, OutputBuf) ->
     AcceptHeader = maps:get(<<"accept">>, InHeaders, <<>>),
     SupportedAccepts = parse_accept_header(AcceptHeader),
-    case lists:member(<<"text/event-stream">>, SupportedAccepts) orelse
-         lists:member(<<"*/*">>, SupportedAccepts) of
+    case lists:member(<<"text/event-stream">>, SupportedAccepts) of
         false ->
             %% Клиент не поддерживает SSE -> возвращаем обычный JSON
             ReqJson = cowboy_req:reply(ResponseStatus,

@@ -19,7 +19,6 @@ all() -> [
     prompts_list_test,
     prompts_get_test,
     accept_header_sse_test,
-    accept_header_asterisk_test,
     ping_test,
     cleanup_test
 ].
@@ -237,20 +236,6 @@ accept_header_sse_test(Config) ->
     HeadersBase = [{"x-api-key", "demo"}, {"mcp-session-id", Sess}],
     Accepts = ["application/json;q=0.3, text/event-stream; q=0.9",
                "text/event-stream; q=0.2, application/json; q=1"],
-    lists:foreach(fun(Accept) ->
-        Headers = [{"accept", Accept} | HeadersBase],
-        {ok, {{_P,200,_}, H, Body}} = httpc:request(post, {Url, Headers, "application/json", Req}, [], [{body_format, binary}]),
-        {ok, ContentType} = find_header_case_insensitive(H, "content-type"),
-        ?assertEqual(<<"text/event-stream">>, string:lowercase(unicode:characters_to_binary(ContentType))),
-        ?assertMatch(<<"data: ", _/binary>>, Body)
-    end, Accepts).
-
-accept_header_asterisk_test(Config) ->
-    Url = cfg_get(Config, url),
-    Sess = cfg_get(Config, session),
-    Req = jsx:encode(#{<<"jsonrpc">> => <<"2.0">>, <<"id">> => 21, <<"method">> => <<"tools/list">>, <<"params">> => #{} }),
-    HeadersBase = [{"x-api-key", "demo"}, {"mcp-session-id", Sess}],
-    Accepts = ["*/*"],
     lists:foreach(fun(Accept) ->
         Headers = [{"accept", Accept} | HeadersBase],
         {ok, {{_P,200,_}, H, Body}} = httpc:request(post, {Url, Headers, "application/json", Req}, [], [{body_format, binary}]),
