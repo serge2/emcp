@@ -163,6 +163,7 @@ handle_call({tools_call, RequestId, #{<<"name">> := NameBin, <<"arguments">> := 
                                     {error, unsupported_tool}
                             end;
                         {error, ValidationError} ->
+                            logger:error("Validation error: ~tp", [ValidationError]),
                             {error, {invalid_arguments, ValidationError}}
                     end;
                 error ->

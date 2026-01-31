@@ -95,6 +95,12 @@ validate_value(PropSchema, Value) when is_map(PropSchema) ->
                     check_enum(PropSchema, Int);
                 {error, R} -> {error, R}
             end;
+        <<"number">> ->
+            case normalize_number(Value) of
+                {ok, Num} ->
+                    check_enum(PropSchema, Num);
+                {error, R} -> {error, R}
+            end;
         <<"boolean">> ->
             case normalize_boolean(Value) of
                 {ok, B} ->
@@ -159,16 +165,25 @@ normalize_string(_) -> {error, <<"invalid_type_expected_string">>}.
 
 normalize_integer(I) when is_integer(I) -> {ok, I};
 normalize_integer(B) when is_binary(B) ->
-    case catch list_to_integer(binary_to_list(B)) of
-        I when is_integer(I) -> {ok, I};
-        _ -> {error, <<"invalid_integer_value">>}
-    end;
-normalize_integer(L) when is_list(L) ->
-    case catch list_to_integer(L) of
+    case catch binary_to_integer(B) of
         I when is_integer(I) -> {ok, I};
         _ -> {error, <<"invalid_integer_value">>}
     end;
 normalize_integer(_) -> {error, <<"invalid_type_expected_integer">>}.
+
+normalize_number(I) when is_number(I) -> {ok, I};
+normalize_number(B) when is_binary(B) ->
+    case catch binary_to_float(B) of
+        F when is_float(F) -> {ok, F};
+        _ ->
+            case catch binary_to_integer(B) of
+                I when is_integer(I) -> {ok, I};
+                _ -> {error, <<"invalid_integer_value">>}
+            end
+    end;
+normalize_number(_) -> {error, <<"invalid_type_expected_integer">>}.
+
+
 
 normalize_boolean(true) -> {ok, true};
 normalize_boolean(false) -> {ok, false};
