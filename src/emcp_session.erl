@@ -301,6 +301,7 @@ prepare_initialize_result(#{mcp_schema := MCPSchema}) ->
                     {instructions, <<"instructions">>}],
     MandatoryItems= #{
         <<"protocolVersion">> => <<"2025-06-18">>,
+        <<"serverInfo">> => ServerInfo,
         <<"capabilities">> => #{
             % <<"completions"> => #{},
             % <<"experimental">> => #{},
@@ -308,8 +309,7 @@ prepare_initialize_result(#{mcp_schema := MCPSchema}) ->
             <<"prompts">> => #{},
             <<"resources">> => #{},
             <<"tools">> => #{}
-        },
-        <<"serverInfo">> => ServerInfo
+        }
     },
     lists:foldl(fun({Key, BinKey}, Acc) ->
                     case maps:find(Key, MCPSchema) of
