@@ -20,14 +20,14 @@ init(Req0, State) ->
     end.
 
 handle_get(Req0, #{api_keys := ApiKeys} = _State) ->
-    Headers = cowboy_req:headers(Req0),
-    case validate_api_key(Headers, ApiKeys) of
+    case validate_api_key(Req0, ApiKeys) of
         ok ->
             %% Simple health check
             Body = <<"{\"ok\":true,\"service\":\"mcp_fs\",\"version\":\"0.1.0\"}">>,
             Req = cowboy_req:reply(200, #{<<"content-type">> => <<"application/json">>}, Body, Req0),
             {ok, Req, undefined};
         {error, Reason} ->
+            Headers = cowboy_req:headers(Req0),
             logger:error("Invalid API-Key:~ts.~nHTTP Request:~nHeaders:~n~p~n", [Reason, Headers]),
             Req = cowboy_req:reply(401, #{<<"content-type">> => <<"plain/text">>}, Reason, Req0),
             {ok, Req, undefined}
@@ -36,24 +36,23 @@ handle_get(Req0, #{api_keys := ApiKeys} = _State) ->
 handle_post(Req0, #{api_keys := ApiKeys, module := McpModule, extra_params := ExtraParams} = _State) ->
     {ok, Body, Req1} = cowboy_req:read_body(Req0),
     Headers = cowboy_req:headers(Req1),
-    case validate_api_key(Headers, ApiKeys) of
+    case validate_api_key(Req1, ApiKeys) of
         ok ->
-            case jsx:is_json(Body) of
-                true ->
-                    Json = jsx:decode(Body, [return_maps]),
+            try jsx:decode(Body, [return_maps]) of
+                Json ->
                     logger:info("HTTP Request:~nHeaders:~n~p~nBody:~n~ts~n", [Headers, Body]),
                     try handle_post_jsonrpc(Json, Headers, {McpModule, ExtraParams}) of
                         {ResponseStatus, OutHeaders, RespBin, OutputBuf} ->
-                            do_reply(Req1, Headers, ResponseStatus, OutHeaders, RespBin, OutputBuf)
+                            do_reply(Req1, ResponseStatus, OutHeaders, RespBin, OutputBuf)
                     catch
                         Class:Reason:Stack ->
                             logger:error("handle_post_jsonrpc exception:~n~p:~p ~tp", [Class, Reason, Stack]),
                             Req4 = cowboy_req:reply(500, #{<<"content-type">> => <<"application/json">>},
                                                     <<"{\"jsonrpc\":\"2.0\",\"error\":{\"code\":-32603,\"message\":\"Internal error\"}}">>, Req1),
                             {ok, Req4, undefined}
-                    end;
-
-                false ->
+                    end
+            catch
+                _Class:_Reason:_Stack ->
                     logger:error("Faild to decode request body. Headers:~n~tp~nBosy:~n~ts~n", [Headers, Body]),
                     Req2 = cowboy_req:reply(400, #{<<"content-type">> => <<"application/json">>},
                                             <<"{\"jsonrpc\":\"2.0\",\"error\":{\"code\":-32700,\"message\":\"Parse error\"}}">>, Req1),
@@ -68,7 +67,7 @@ handle_post(Req0, #{api_keys := ApiKeys, module := McpModule, extra_params := Ex
 handle_delete(Req, #{api_keys := ApiKeys} = _State) ->
     %% Delete session
     Headers = cowboy_req:headers(Req),
-    case validate_api_key(Headers, ApiKeys) of
+    case validate_api_key(Req, ApiKeys) of
         ok ->
             SessionId = get_session_id(Headers),
             case find_session(SessionId) of
@@ -94,10 +93,17 @@ handle_delete(Req, #{api_keys := ApiKeys} = _State) ->
 
 
 
-do_reply(Req, InHeaders, ResponseStatus, OutHeaders, RespBin, OutputBuf) ->
-    AcceptHeader = maps:get(<<"accept">>, InHeaders, <<>>),
-    SupportedAccepts = parse_accept_header(AcceptHeader),
-    case lists:member(<<"text/event-stream">>, SupportedAccepts) of
+do_reply(Req, ResponseStatus, OutHeaders, RespBin, OutputBuf) ->
+    ParsedAccept = cowboy_req:parse_header(<<"accept">>, Req, []),
+    
+    %% Проверяем, есть ли среди них text/event-stream
+    IsSseSupported = lists:any(
+        fun({{Type, SubType, _}, _Quality, _Ext}) -> 
+            Type =:= <<"text">> andalso SubType =:= <<"event-stream">>
+        end, 
+        ParsedAccept),
+
+    case IsSseSupported of    
         false ->
             %% Клиент не поддерживает SSE -> возвращаем обычный JSON
             ReqJson = cowboy_req:reply(ResponseStatus,
@@ -292,70 +298,31 @@ find_session(_) ->
     {error, invalid_session_id}.
 
 gen_uuid_v7() ->
-    %% Получаем время в миллисекундах с Unix epoch
-    {Mega, Sec, Micro} = os:timestamp(),
-    UnixMillis = (Mega * 1000000 + Sec) * 1000 + (Micro div 1000),
+    %% 1. Get current Unix time in milliseconds
+    SystemMillis = erlang:system_time(millisecond),
 
-    %% UUIDv7: 48 бит времени, 12 бит версии, 62 бит случайных
-    <<Time48:48>> = <<UnixMillis:48>>,
-    Random = crypto:strong_rand_bytes(10), %% 80 бит
+    %% 2. Generate 10 random bytes (80 bits of entropy)
+    RandomBytes = crypto:strong_rand_bytes(10),
+    <<RandA:12, RandB:62, _:6>> = RandomBytes,
 
-    <<RandA:12/integer, RandB:62/integer, _:6>> = Random,
+    %% 3. Construct the raw 128-bit UUIDv7 binary according to RFC 9562
+    %% ver = 7 (4 bits: 0111), var = 2 (2 bits: 10)
+    RawUUID = <<SystemMillis:48, 7:4, RandA:12, 2:2, RandB:62>>,
 
-    %% Формируем UUID поля
-    Version = 7, %% 4 бита
-    Hi = (RandA band 16#0FFF) bor (Version bsl 12), %% 16 бит: 4 версии + 12 рандом
-    Variant = (RandB bsr 62) bor 2#10, %% 2 бита variant RFC4122
-
-    %% Собираем UUID
-    list_to_binary(io_lib:format("~12.16.0B-~4.16.0B-~4.16.0B-~4.16.0B-~12.16.0B",
-        [Time48,
-         Hi band 16#FFFF,
-         (Hi bsr 16) band 16#FFFF,
-         (Variant bsl 14) bor ((RandB bsr 48) band 16#3FFF),
-         RandB band 16#FFFFFFFFFFFF])).
-
+    %% 4. Convert the binary to a canonical hex string (8-4-4-4-12)
+    <<C1:8/binary, C2:4/binary, C3:4/binary, C4:4/binary, C5:12/binary>> = binary:encode_hex(RawUUID, lowercase),
+    
+    %% Assemble the final hyphenated binary string
+    <<C1/binary, "-", C2/binary, "-", C3/binary, "-", C4/binary, "-", C5/binary>>.
 
 
 get_session_id(Headers) ->
     maps:get(<<"mcp-session-id">>, Headers, undefined).
 
--spec parse_accept_header(Header::binary()) -> [MediaType::binary()].
-parse_accept_header(AcceptHeader) when is_binary(AcceptHeader) ->
-    %% Преобразуем AcceptHeader в строку и разбиваем по запятым
-    Types0 = binary:split(AcceptHeader, <<",">>, [global]),
-    %% Парсим каждый тип, извлекая media type и q-параметр
-    Types1 = [parse_accept_type(string:trim(Type, both, " ") ) || Type <- Types0],
-    %% Сортируем по q (приоритету), по убыванию
-    Sorted = lists:sort(fun({_, Q1}, {_, Q2}) -> Q1 > Q2 end, Types1),
-    %% Возвращаем только типы
-    [Type || {Type, _Q} <- Sorted].
-
-parse_accept_type(TypeBin) ->
-    %% Разделяем параметры
-    [MediaType | Params] = binary:split(TypeBin, <<";">>, [global]),
-    Q = case [P || P <- Params, binary:match(P, <<"q=">>) =/= nomatch] of
-            [QParam | _] ->
-                case binary:split(QParam, <<"=">>) of
-                    [_, QVal] ->
-                        case string:to_float(QVal) of
-                            {F, <<>>} -> F;
-                            {error, no_float} ->
-                                case string:to_integer(QVal) of
-                                    {I, <<>>} -> float(I);
-                                    {error, no_integer} -> 1.0
-                                end;
-                            _ -> 1.0
-                        end;
-                    _ -> 1.0
-                end;
-            _ -> 1.0
-        end,
-    {string:trim(MediaType, both, [<<" ">>]), Q}.
 
 %% new helpers: API key support (configured in app config as mcp, api_keys = [<<"key1">>, "key2", ...])
-validate_api_key(Headers, ApiKeys) when is_map(Headers), is_list(ApiKeys) ->
-    case get_api_key_from_headers(Headers) of
+validate_api_key(Req, ApiKeys) when  is_list(ApiKeys) ->
+    case get_api_key_from_headers(Req) of
         undefined ->
             {error, <<"missing_api_key">>};
         Key ->
@@ -366,27 +333,20 @@ validate_api_key(Headers, ApiKeys) when is_map(Headers), is_list(ApiKeys) ->
             end
     end.
 
-%% @doc Extracts the API key from HTTP headers, supporting both "x-api-key" and "authorization: Bearer ..." formats.
--spec get_api_key_from_headers(map()) -> binary() | undefined.
-get_api_key_from_headers(Headers) when is_map(Headers) ->
-    %% Prefer X-API-Key header
-    case maps:get(<<"x-api-key">>, Headers, undefined) of
-        Key when is_binary(Key) -> Key;
-        _ ->
-            case maps:get(<<"authorization">>, Headers, undefined) of
-                Auth when is_binary(Auth) ->
-                    case binary:split(Auth, <<" ">>, [global]) of
-                        [Scheme, Token] ->
-                            LowerScheme = string:to_lower(binary_to_list(Scheme)),
-                            case LowerScheme of
-                                "bearer" -> Token;
-                                _ -> undefined
-                            end;
-                        _ -> undefined
-                    end;
-                _ -> undefined
+-spec get_api_key_from_headers(cowboy_req:req()) -> binary() | undefined.
+get_api_key_from_headers(Req) ->
+    %% Сначала проверяем приоритетный x-api-key (он возвращает бинарник или undefined)
+    case cowboy_req:header(<<"x-api-key">>, Req) of
+        Key when is_binary(Key) ->
+            Key;
+        undefined ->
+            %% Если его нет, парсим стандартный Authorization
+            case cowboy_req:parse_header(<<"authorization">>, Req) of
+                {bearer, Token} ->
+                    Token;
+                _ ->
+                    undefined %% Если там Basic auth, Digest или заголовка нет
             end
     end.
-
 
 
