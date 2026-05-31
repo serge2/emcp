@@ -6,15 +6,15 @@
          stop/1,
          get_output_buf/1,
          initialize/2,
-         initialized/1,
-         tools_list/2,
+         initialized/2,
+         tools_list/3,
          tools_call/3,
-         resources_list/2,
+         resources_list/3,
          resources_read/3,
-         prompts_list/2,
+         prompts_list/3,
          prompts_get/3,
          cancelled/2,
-         ping/2
+         ping/3
         ]).
 %%-export([start_link/0]).
 
@@ -37,22 +37,22 @@ get_output_buf(Pid) ->
 initialize(Pid, Params) ->
     gen_server:call(Pid, {initialize, Params}).
 
-initialized(Pid) ->
+initialized(Pid, _Params) ->
     gen_server:call(Pid, initialized).
 
-tools_list(Pid, RequestId) ->
+tools_list(Pid, RequestId, _Params) ->
     gen_server:call(Pid, {tools_list, RequestId}).
 
 tools_call(Pid, RequestId, Params) ->
     gen_server:call(Pid, {tools_call, RequestId, Params}, infinity).
 
-resources_list(Pid, RequestId) ->
+resources_list(Pid, RequestId, _Params) ->
     gen_server:call(Pid, {resources_list, RequestId}).
 
 resources_read(Pid, RequestId, Params) ->
     gen_server:call(Pid, {resources_read, RequestId, Params}).
 
-prompts_list(Pid, RequestId) ->
+prompts_list(Pid, RequestId, _Params) ->
     gen_server:call(Pid, {prompts_list, RequestId}).
 
 prompts_get(Pid, RequestId, Params) ->
@@ -61,7 +61,7 @@ prompts_get(Pid, RequestId, Params) ->
 cancelled(Pid, Params) ->
     gen_server:call(Pid, {cancelled, Params}).
 
-ping(Pid, RequestId) ->
+ping(Pid, RequestId, _Params) ->
     gen_server:call(Pid, {ping, RequestId}).
 
 
@@ -110,7 +110,7 @@ handle_call({initialize, Params}, _From, State) ->
     try
         InitializeResult = prepare_initialize_result(State),
         ClientCapabilites = maps:get(<<"capabilities">>, Params, #{}),
-        {reply, {ok, InitializeResult},
+        {reply, {reply, InitializeResult},
          State#{initialized => true,
                 proto => <<"2025-06-18">>,
                 client_capabilities => ClientCapabilites}}
@@ -123,12 +123,12 @@ handle_call({initialize, Params}, _From, State) ->
 handle_call(initialized, _From, State) ->
     logger:info("MCP session initialized"),
     State2 = check_roots(State),
-    {reply, ok, State2#{initialized => true}};
+    {reply, noreply, State2#{initialized => true}};
 
 handle_call({tools_list, RequestId}, From, #{tools_defs := Definitions} = State) ->
     NewState = spawn_request_worker(tools_list, RequestId,
         fun() ->
-            {ok, #{<<"tools">> => Definitions}}
+            {reply, #{<<"tools">> => Definitions}}
         end,
         From, State),
     {noreply, NewState};
@@ -147,17 +147,17 @@ handle_call({tools_call, RequestId, #{<<"name">> := NameBin, <<"arguments">> := 
                                 {ok, Fun} ->
                                     case Fun(NameBin, ValidatedArgs, ExtraParams) of
                                         {ok, Ret} ->
-                                            {ok, #{<<"content">> => Ret}};
+                                            {reply, #{<<"content">> => Ret}};
                                         {structured_ok, Ret} ->
-                                            {ok, #{<<"content">> => [#{<<"type">> => <<"text">>,
+                                            {reply, #{<<"content">> => [#{<<"type">> => <<"text">>,
                                                                 <<"text">> => jsx:encode(Ret)}
                                                                 ],
-                                            <<"structuredContent">> => Ret}};
+                                                      <<"structuredContent">> => Ret}};
                                         {error, Error} ->
-                                                {ok, #{<<"content">> => [#{ <<"type">> => <<"text">>,
+                                            {reply, #{<<"content">> => [#{ <<"type">> => <<"text">>,
                                                                             <<"text">> => unicode:characters_to_binary([<<"Error: ">>, Error])
                                                                         }],
-                                                    <<"isError">> => true}}
+                                                     <<"isError">> => true}}
                                     end;
                                 error ->
                                     {error, unsupported_tool}
@@ -176,7 +176,7 @@ handle_call({tools_call, RequestId, #{<<"name">> := NameBin, <<"arguments">> := 
 handle_call({resources_list, RequestId}, From, #{resources_defs := Definitions} = State) ->
     NewState = spawn_request_worker(resources_list, RequestId,
         fun() ->
-            {ok, #{<<"resources">> => Definitions}}
+            {reply, #{<<"resources">> => Definitions}}
         end,
         From, State),
     {noreply, NewState};
@@ -187,7 +187,7 @@ handle_call({resources_read, RequestId, #{<<"uri">> := URI}}, From, #{extra_para
             ResourcesFuns = maps:get(resources_funs, State, #{}),
             case find_resources_fun(ResourcesFuns, URI) of
                 {ok, Fun} ->
-                    {ok, #{<<"contents">> => Fun(URI, ExtraParams)}};
+                    {reply, #{<<"contents">> => Fun(URI, ExtraParams)}};
                 error ->
                     {error, unsupported_resource}
             end
@@ -198,7 +198,7 @@ handle_call({resources_read, RequestId, #{<<"uri">> := URI}}, From, #{extra_para
 handle_call({prompts_list, RequestId}, From, #{prompts_defs := Definitions} = State) ->
     NewState = spawn_request_worker(prompts_list, RequestId,
         fun() ->
-            {ok, #{<<"prompts">> => Definitions}}
+            {reply, #{<<"prompts">> => Definitions}}
         end,
         From, State),
     {noreply, NewState};
@@ -216,9 +216,9 @@ handle_call({prompts_get, RequestId, #{<<"name">> := NameBin, <<"arguments">> :=
                                 {ok, Fun} ->
                                     case Fun(NameBin, ValidatedArgs, ExtraParams) of
                                         {ok, Result} ->
-                                            {ok, Result};
+                                            {reply, Result};
                                         {error, _Error} ->
-                                                {error, internal}
+                                            {error, internal}
                                     end;
                                 error ->
                                     {error, unsupported_prompt}
@@ -238,18 +238,18 @@ handle_call({cancelled, #{<<"requestId">> := RequestId, <<"reason">> := Reason}}
         {ok, Pid} ->
             logger:warning("Cancelling active request ~p (worker ~p), reason: ~p", [RequestId, Pid, Reason]),
             exit(Pid, kill),
-            {reply, ok, State};
+            {reply, noreply, State};
         error ->
             logger:warning("No active request worker found for cancelled request ~p", [RequestId]),
-            {reply, ok, State}
+            {reply, noreply, State}
     end;
 
 handle_call({ping, _RequestId}, _From, State) ->
-    {reply, {ok, pong}, State};
+    {reply, {reply, #{}}, State};
 
 handle_call(Request, _From, State) ->
     logger:info("MCP session received unexpected call: ~p", [Request]),
-    {reply, ok, State}.
+    {reply, noreply, State}.
 
 handle_cast(Msg, State) ->
     logger:info("MCP session received unexpected cast: ~p", [Msg]),

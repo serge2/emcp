@@ -43,18 +43,8 @@ handle_post(Req0, #{api_keys := ApiKeys, module := McpModule, extra_params := Ex
                     Json = jsx:decode(Body, [return_maps]),
                     logger:info("HTTP Request:~nHeaders:~n~p~nBody:~n~ts~n", [Headers, Body]),
                     try handle_post_jsonrpc(Json, Headers, {McpModule, ExtraParams}) of
-                        {ok, noreply, OutputBuf} ->
-                            do_reply(Req1, Headers, 202, #{}, <<>>, OutputBuf);
-                        {ok, {reply, Reply}, OutputBuf} ->
-                            logger:info("HTTP Reply(raw):~n~tp~n", [Reply]),
-                            do_reply(Req1, Headers, 200, #{}, jsx:encode(Reply), OutputBuf);
-                        {ok, {reply, Reply, SessionId}, OutputBuf} ->
-                            logger:info("HTTP Reply(raw):~n~tp~n", [Reply]),
-                            %% Это инициализация - добавляем заголовок с SessionId
-                            OutHeaders = #{<<"Mcp-Session-Id">> => SessionId},
-                            do_reply(Req1, Headers, 200, OutHeaders, jsx:encode(Reply), OutputBuf);
-                        {error, ResponseStatus, Reply} ->
-                            do_reply(Req1, Headers, ResponseStatus, #{}, jsx:encode(Reply), [])
+                        {ResponseStatus, OutHeaders, RespBin, OutputBuf} ->
+                            do_reply(Req1, Headers, ResponseStatus, OutHeaders, RespBin, OutputBuf)
                     catch
                         Class:Reason:Stack ->
                             logger:error("handle_post_jsonrpc exception:~n~p:~p ~tp", [Class, Reason, Stack]),
@@ -153,34 +143,54 @@ stream_chunks(StreamReq, [H | T]) ->
 
 %% @doc Dispatches a JSON-RPC request or notification to the appropriate handler.
 %% Expects a map representing a JSON-RPC 2.0 object and HTTP headers.
-%% Returns {ok, noreply, OutputBuf} | {ok, {reply, Reply}, OutputBuf} | 
-%% {ok, {reply, Reply, SessionId}, OutputBuf} | {error, Status, Reply}.
 -spec handle_post_jsonrpc(map(), map(), atom()) ->
-    {ok, noreply, list()} |
-    {ok, {reply, map()}, list()} |
-    {ok, {reply, map(), binary()}, list()} |
-    {error, integer(), map()} |
+    {HTTPStatus::integer(), OutHeaders::map(), Response::binary(), OutputBuf::list()} |
     no_return().
-handle_post_jsonrpc(#{<<"jsonrpc">> := <<"2.0">>, <<"method">> := _, <<"id">> := _} = Request, Headers, McpInfo) ->
-    handle_post_call(Request, Headers, McpInfo);
+handle_post_jsonrpc(#{<<"jsonrpc">> := <<"2.0">>, <<"method">> := _, <<"id">> := RequestId} = Request, Headers, McpInfo) ->
+    case handle_post_call(Request, Headers, McpInfo) of
+        {noreply, OutputBuf} ->
+            {202, #{}, <<>>, OutputBuf};
+        {{reply, ReplyRaw}, OutputBuf} ->
+            Reply = #{<<"jsonrpc">> => <<"2.0">>, <<"id">> => RequestId, <<"result">> => ReplyRaw},
+            logger:info("HTTP Reply(raw):~n~tp~n", [Reply]),
+            {200, #{}, jsx:encode(Reply), OutputBuf};
+        {{reply, ReplyRaw, SessionId}, OutputBuf} ->
+            Reply = #{<<"jsonrpc">> => <<"2.0">>, <<"id">> => RequestId, <<"result">> => ReplyRaw},
+            logger:info("HTTP Reply(raw):~n~tp~n", [Reply]),
+            %% Это инициализация - добавляем заголовок с SessionId
+            OutHeaders = #{<<"Mcp-Session-Id">> => SessionId},
+            {200, OutHeaders, jsx:encode(Reply), OutputBuf};
+        {error, ResponseStatus, Reply} ->
+            {ResponseStatus, #{}, jsx:encode(Reply), []}
+    end;
+
 handle_post_jsonrpc(#{<<"jsonrpc">> := <<"2.0">>, <<"method">> := _} = Notification, Headers, _McpInfo) ->
-    handle_post_notification(Notification, Headers);
+    case handle_post_notification(Notification, Headers) of
+        {noreply, OutputBuf} ->
+            {202, #{}, <<>>, OutputBuf};
+        {{reply, ReplyRaw}, OutputBuf} ->
+            Reply = #{<<"jsonrpc">> => <<"2.0">>, <<"result">> => ReplyRaw},
+            logger:info("HTTP Reply(raw):~n~tp~n", [Reply]),
+            {200, #{}, jsx:encode(Reply), OutputBuf};
+        {error, ResponseStatus, Reply} ->
+            {ResponseStatus, #{}, jsx:encode(Reply), []}
+    end;
+
 handle_post_jsonrpc(_Json, _Headers, _McpInfo) ->
     error(client_error).
 
 
 
-handle_post_call(#{<<"method">> := <<"initialize">>, <<"params">> :=Params} = Request, _Headers, McpInfo) ->
+handle_post_call(#{<<"method">> := <<"initialize">>, <<"params">> := Params} = Request, _Headers, McpInfo) ->
     logger:info("Initializing new MCP session..."),
     SessionId = gen_uuid_v7(),
     {ok, Pid} = emcp_session:start(SessionId, McpInfo),
     ok = register_session(SessionId, Pid),
     logger:info("Initialized new MCP session ~p with pid ~p", [SessionId, Pid]),
     case emcp_session:initialize(Pid, Params) of
-        {ok, Result} ->
+        {reply, Result} ->
             OutputBuf = emcp_session:get_output_buf(Pid),
-            {ok,
-             {reply,
+            {{reply,
               #{<<"jsonrpc">> => <<"2.0">>,
                 <<"id">> => maps:get(<<"id">>, Request),
                 <<"result">> => Result},
@@ -193,128 +203,25 @@ handle_post_call(#{<<"method">> := <<"initialize">>, <<"params">> :=Params} = Re
     end;
 
 handle_post_call(#{<<"method">> := <<"tools/list">>} = Request, Headers, _) ->
-    do_in_session(Headers, fun(Pid) ->
-        RequestId = maps:get(<<"id">>, Request),
-        case emcp_session:tools_list(Pid, RequestId) of
-            {ok, Tools} ->
-                {reply,
-                 #{<<"jsonrpc">> => <<"2.0">>,
-                   <<"id">> => RequestId,
-                   <<"result">> => Tools}};
-            {error, _Reason} ->
-                {error, 500,
-                 #{<<"jsonrpc">> => <<"2.0">>,
-                   <<"id">> => RequestId,
-                   <<"error">> => #{<<"code">> => -32000, <<"message">> => <<"Server error">>}}}
-        end
-    end);
+    do_call_in_session(Request, Headers, fun emcp_session:tools_list/3); %% (Pid, RequestId, Params)
 
-
-handle_post_call(#{<<"method">> := <<"tools/call">>, <<"params">> := Params} = Request, Headers, _) ->
-    do_in_session(Headers, fun(Pid) ->
-        RequestId = maps:get(<<"id">>, Request),
-        case emcp_session:tools_call(Pid, RequestId, Params) of
-            {ok, Result} ->
-                {reply,
-                 #{<<"jsonrpc">> => <<"2.0">>,
-                   <<"id">> => RequestId,
-                   <<"result">> => Result}};
-            {error, _Reason} ->
-                {error, 500,
-                 #{<<"jsonrpc">> => <<"2.0">>,
-                   <<"id">> => RequestId,
-                   <<"error">> => #{<<"code">> => -32000, <<"message">> => <<"Server error">>}}}
-        end
-    end);
-
+handle_post_call(#{<<"method">> := <<"tools/call">>} = Request, Headers, _) ->
+    do_call_in_session(Request, Headers, fun emcp_session:tools_call/3); %% (Pid, RequestId, Params)
 
 handle_post_call(#{<<"method">> := <<"resources/list">>} = Request, Headers, _) ->
-    do_in_session(Headers, fun(Pid) ->
-        RequestId = maps:get(<<"id">>, Request),
-        case emcp_session:resources_list(Pid, RequestId) of
-            {ok, Result} ->
-                {reply,
-                 #{<<"jsonrpc">> => <<"2.0">>,
-                   <<"id">> => RequestId,
-                   <<"result">> => Result}};
-            {error, _Reason} ->
-                {error, 500,
-                 #{<<"jsonrpc">> => <<"2.0">>,
-                   <<"id">> => RequestId,
-                   <<"error">> => #{<<"code">> => -32000, <<"message">> => <<"Server error">>}}}
-        end
-    end);
+    do_call_in_session(Request, Headers, fun emcp_session:resources_list/3); %% (Pid, RequestId, Params)
 
+handle_post_call(#{<<"method">> := <<"resources/read">>} = Request, Headers, _) ->
+    do_call_in_session(Request, Headers, fun emcp_session:resources_read/3); %% (Pid, RequestId, Params)
 
-handle_post_call(#{<<"method">> := <<"resources/read">>, <<"params">> := Params} = Request, Headers, _) ->
-    do_in_session(Headers, fun(Pid) ->
-        RequestId = maps:get(<<"id">>, Request),
-        case emcp_session:resources_read(Pid, RequestId, Params) of
-            {ok, Result} ->
-                {reply,
-                    #{<<"jsonrpc">> => <<"2.0">>,
-                    <<"id">> => RequestId,
-                    <<"result">> => Result}};
-            {error, _Reason} ->
-                {error, 500,
-                    #{<<"jsonrpc">> => <<"2.0">>,
-                    <<"id">> => RequestId,
-                    <<"error">> => #{<<"code">> => -32000, <<"message">> => <<"Server error">>}}}
-        end
-    end);
+ handle_post_call(#{<<"method">> := <<"prompts/list">>} = Request, Headers, _) ->
+    do_call_in_session(Request, Headers, fun emcp_session:prompts_list/3); %% (Pid, RequestId, Params)
 
-handle_post_call(#{<<"method">> := <<"prompts/list">>} = Request, Headers, _) ->
-    do_in_session(Headers, fun(Pid) ->
-        RequestId = maps:get(<<"id">>, Request),
-        case emcp_session:prompts_list(Pid, RequestId) of
-            {ok, Result} ->
-                {reply,
-                 #{<<"jsonrpc">> => <<"2.0">>,
-                   <<"id">> => RequestId,
-                   <<"result">> => Result}};
-            {error, _Reason} ->
-                {error, 500,
-                 #{<<"jsonrpc">> => <<"2.0">>,
-                   <<"id">> => RequestId,
-                   <<"error">> => #{<<"code">> => -32000, <<"message">> => <<"Server error">>}}}
-        end
-    end);
-
-
-handle_post_call(#{<<"method">> := <<"prompts/get">>, <<"params">> := Params} = Request, Headers, _) ->
-    do_in_session(Headers, fun(Pid) ->
-        RequestId = maps:get(<<"id">>, Request),
-        case emcp_session:prompts_get(Pid, RequestId, Params) of
-            {ok, Result} ->
-                {reply,
-                    #{<<"jsonrpc">> => <<"2.0">>,
-                    <<"id">> => RequestId,
-                    <<"result">> => Result}};
-            {error, _Reason} ->
-                {error, 500,
-                    #{<<"jsonrpc">> => <<"2.0">>,
-                    <<"id">> => RequestId,
-                    <<"error">> => #{<<"code">> => -32000, <<"message">> => <<"Server error">>}}}
-        end
-    end);
+handle_post_call(#{<<"method">> := <<"prompts/get">>} = Request, Headers, _) ->
+    do_call_in_session(Request, Headers, fun emcp_session:prompts_get/3); %% (Pid, RequestId, Params)
 
 handle_post_call(#{<<"method">> := <<"ping">>} = Request, Headers, _) ->
-    do_in_session(Headers, fun(Pid) ->
-        RequestId = maps:get(<<"id">>, Request),
-        case emcp_session:ping(Pid, RequestId) of
-            {ok, pong} ->
-                {reply,
-                    #{<<"jsonrpc">> => <<"2.0">>,
-                    <<"id">> => RequestId,
-                    <<"result">> => #{}}};
-            {error, _Reason} ->
-                {error, 500,
-                    #{<<"jsonrpc">> => <<"2.0">>,
-                    <<"id">> => RequestId,
-                    <<"error">> => #{<<"code">> => -32000, <<"message">> => <<"Server error">>}}}
-        end
-    end);
-
+    do_call_in_session(Request, Headers, fun emcp_session:ping/3); %% (Pid, RequestId, Params)
 
 handle_post_call(Request, _Headers, _) ->
     {error, 400,
@@ -323,42 +230,32 @@ handle_post_call(Request, _Headers, _) ->
           <<"error">> => #{<<"code">> => -32001, <<"message">> => <<"Unsupported method">>}}}.
 
 
-handle_post_notification(#{<<"method">> := <<"notifications/initialized">>}, Headers) ->
-    do_in_session(Headers, fun(Pid) ->
-        case emcp_session:initialized(Pid) of
-            ok ->
-                noreply;
-            {error, Reason} ->
-                {error, 500,
-                    #{<<"jsonrpc">> => <<"2.0">>,
-                      <<"error">> => #{<<"code">> => -32000, <<"message">> => <<"Server error">>,
-                                       <<"data">> => unicode:characters_to_binary(io_lib:format("~p", [Reason]))}}}
-        end
-    end);
+handle_post_notification(#{<<"method">> := <<"notifications/initialized">>} = Notification, Headers) ->
+    do_notification_in_session(Notification, Headers, fun emcp_session:initialized/2); %% (Pid, Params)
 
-handle_post_notification(#{<<"method">> := <<"notifications/cancelled">>, <<"params">> := Params}, Headers) ->
-    do_in_session(Headers, fun(Pid) ->
-        case emcp_session:cancelled(Pid, Params) of
-            ok ->
-                noreply;
-            {error, Reason} ->
-                {error, 500,
-                    #{<<"jsonrpc">> => <<"2.0">>,
-                      <<"error">> => #{<<"code">> => -32000, <<"message">> => <<"Server error">>,
-                                       <<"data">> => unicode:characters_to_binary(io_lib:format("~p", [Reason]))}}}
-        end
-    end);
+handle_post_notification(#{<<"method">> := <<"notifications/cancelled">>} = Notification, Headers) ->
+    do_notification_in_session(Notification, Headers, fun emcp_session:cancelled/2); %% (Pid, Params)
 
-
-handle_post_notification(Notification, Headers) ->
+handle_post_notification(Notification, _Headers) ->
     logger:error("Unknown notification:~n~p~n", [Notification]),
-    do_in_session(Headers, fun(_Pid) ->
-        noreply
-    end).
+    noreply.
 
 register_session(SessionId, Pid) ->
     true = ets:insert(mcp_sessions, {SessionId, Pid}),
     ok.
+
+do_call_in_session(Request, Headers, CallFun) ->
+    RequestId = maps:get(<<"id">>, Request),
+    Params = maps:get(<<"params">>, Request, #{}),
+    do_in_session(Headers, fun(Pid) ->
+        CallFun(Pid, RequestId, Params)
+    end).
+
+do_notification_in_session(Notification, Headers, NotifFun) ->
+    Params = maps:get(<<"params">>, Notification, #{}),
+    do_in_session(Headers, fun(Pid) ->
+        NotifFun(Pid, Params)
+    end).
 
 do_in_session(Headers, Fun) ->
     SessionId = get_session_id(Headers),
@@ -367,13 +264,13 @@ do_in_session(Headers, Fun) ->
             case Fun(Pid) of
                 noreply ->
                     OutputBuf = emcp_session:get_output_buf(Pid),
-                    {ok, noreply, OutputBuf};
+                    {noreply, OutputBuf};
                 {reply, Resp} ->
                     OutputBuf = emcp_session:get_output_buf(Pid),
-                    {ok, {reply, Resp}, OutputBuf};
+                    {{reply, Resp}, OutputBuf};
                 {reply, Resp, SessionId2} ->
                     OutputBuf = emcp_session:get_output_buf(Pid),
-                    {ok, {reply, Resp, SessionId2}, OutputBuf};
+                    {{reply, Resp, SessionId2}, OutputBuf};
                 {error, Status, Resp} ->
                     {error, Status, Resp}
             end;
