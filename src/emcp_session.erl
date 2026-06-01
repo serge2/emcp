@@ -5,7 +5,7 @@
 -export([start/2,
          stop/1,
          get_output_buf/1,
-         initialize/2,
+         initialize/3,
          initialized/2,
          tools_list/3,
          tools_call/3,
@@ -34,7 +34,7 @@ stop(Pid) ->
 get_output_buf(Pid) ->
     gen_server:call(Pid, get_output_buf).
 
-initialize(Pid, Params) ->
+initialize(Pid, _RequestId, Params) ->
     gen_server:call(Pid, {initialize, Params}).
 
 initialized(Pid, _Params) ->
