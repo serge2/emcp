@@ -14,8 +14,15 @@ init(Req0, State) ->
         <<"DELETE">> -> handle_delete(Req0, State);
         _ ->
             logger:error("Unsupported method: ~ts", [Method]),
-            Req = cowboy_req:reply(405, #{<<"content-type">> => <<"application/json">>},
-                                   <<"{\"error\":\"method_not_allowed\"}">>, Req0),
+            Req = cowboy_req:reply(
+                405,
+                #{
+                    <<"content-type">> => <<"application/json">>,
+                    <<"allow">> => <<"POST, DELETE">>
+                },
+                <<"{\"error\":\"method_not_allowed\"}">>,
+                Req0
+            ),
             {ok, Req, undefined}
     end.
 
@@ -48,7 +55,7 @@ handle_post(Req0, #{api_keys := ApiKeys, module := McpModule, extra_params := Ex
                     catch
                         Class:Reason:Stack ->
                             logger:error("handle_post_jsonrpc exception:~n~p:~p ~tp", [Class, Reason, Stack]),
-                            Req4 = cowboy_req:reply(500, #{<<"content-type">> => <<"application/json">>},
+                            Req4 = cowboy_req:reply(400, #{<<"content-type">> => <<"application/json">>},
                                                     <<"{\"jsonrpc\":\"2.0\",\"error\":{\"code\":-32603,\"message\":\"Internal error\"}}">>, Req1),
                             {ok, Req4, undefined}
                     end
@@ -118,6 +125,7 @@ do_reply(Req, ResponseStatus, OutHeaders, RespBin, OutputBuf) ->
                     <<"content-type">> => <<"text/event-stream">>,
                     <<"transfer-encoding">> => <<"chunked">>,
                     <<"cache-control">> => <<"no-cache">>,
+                    <<"x-accel-buffering">> => <<"no">>,
                     <<"connection">>    => <<"keep-alive">>
                     },
                 Req),
@@ -134,15 +142,15 @@ do_reply(Req, ResponseStatus, OutHeaders, RespBin, OutputBuf) ->
 
 %% Отправка событий SSE
 stream_chunks(StreamReq, []) ->
-  logger:info("SSE: пустой ответ, закрываем поток"),
-  cowboy_req:stream_events(#{ data => <<>>}, fin, StreamReq);
+    logger:info("SSE: пустой ответ, закрываем поток"),
+    cowboy_req:stream_events(#{ data => <<>>}, fin, StreamReq);
 stream_chunks(StreamReq, [Last]) ->
-  logger:info("SSE: отправляем последний чанк размером ~p байт с FIN~n~ts~n", [byte_size(Last), Last]),
-  cowboy_req:stream_events(#{ data => Last}, fin, StreamReq);
+    logger:info("SSE: отправляем последний чанк размером ~p байт с FIN~n~ts~n", [byte_size(Last), Last]),
+    cowboy_req:stream_events(#{ data => Last}, fin, StreamReq);
 stream_chunks(StreamReq, [H | T]) ->
-  logger:info("SSE: отправляем чанк размером ~p байт (осталось ~p)", [byte_size(H), length(T)]),
-  cowboy_req:stream_events(#{ data => H}, nofin, StreamReq),
-  stream_chunks(StreamReq, T).
+    logger:info("SSE: отправляем чанк размером ~p байт (осталось ~p)", [byte_size(H), length(T)]),
+    cowboy_req:stream_events(#{ data => H}, nofin, StreamReq),
+    stream_chunks(StreamReq, T).
 
 
 
@@ -193,66 +201,36 @@ handle_post_call(#{<<"method">> := <<"initialize">>} = Request, _SessionId, McpI
     {ok, Pid} = emcp_session:start(SessionId, McpInfo),
     ok = register_session(SessionId, Pid),
     logger:info("Initialized new MCP session ~p with pid ~p", [SessionId, Pid]),
-    case do_call_in_session(Request, SessionId, fun emcp_session:initialize/3) of %% (Pid, RequestId, Params)
+    case do_call_in_session(Request, SessionId) of 
         {{reply, Resp}, OutputBuf} ->
             {{new_session, Resp, SessionId}, OutputBuf};
         {error, Status, Resp} ->
             {error, Status, Resp}
     end;
 
-handle_post_call(#{<<"method">> := <<"tools/list">>} = Request, SessionId, _) ->
-    do_call_in_session(Request, SessionId, fun emcp_session:tools_list/3); %% (Pid, RequestId, Params)
-
-handle_post_call(#{<<"method">> := <<"tools/call">>} = Request, SessionId, _) ->
-    do_call_in_session(Request, SessionId, fun emcp_session:tools_call/3); %% (Pid, RequestId, Params)
-
-handle_post_call(#{<<"method">> := <<"resources/list">>} = Request, SessionId, _) ->
-    do_call_in_session(Request, SessionId, fun emcp_session:resources_list/3); %% (Pid, RequestId, Params)
-
-handle_post_call(#{<<"method">> := <<"resources/read">>} = Request, SessionId, _) ->
-    do_call_in_session(Request, SessionId, fun emcp_session:resources_read/3); %% (Pid, RequestId, Params)
-
- handle_post_call(#{<<"method">> := <<"prompts/list">>} = Request, SessionId, _) ->
-    do_call_in_session(Request, SessionId, fun emcp_session:prompts_list/3); %% (Pid, RequestId, Params)
-
-handle_post_call(#{<<"method">> := <<"prompts/get">>} = Request, SessionId, _) ->
-    do_call_in_session(Request, SessionId, fun emcp_session:prompts_get/3); %% (Pid, RequestId, Params)
-
-handle_post_call(#{<<"method">> := <<"ping">>} = Request, SessionId, _) ->
-    do_call_in_session(Request, SessionId, fun emcp_session:ping/3); %% (Pid, RequestId, Params)
-
-handle_post_call(Request, _SessionId, _) ->
-    {error, 400,
-        #{<<"jsonrpc">> => <<"2.0">>,
-          <<"id">> => maps:get(<<"id">>, Request),
-          <<"error">> => #{<<"code">> => -32001, <<"message">> => <<"Unsupported method">>}}}.
+handle_post_call(Request, SessionId, _) ->
+    do_call_in_session(Request, SessionId).
 
 
-handle_post_notification(#{<<"method">> := <<"notifications/initialized">>} = Notification, SessionId) ->
-    do_notification_in_session(Notification, SessionId, fun emcp_session:initialized/2); %% (Pid, Params)
+handle_post_notification(Notification, SessionId) ->
+    do_notification_in_session(Notification, SessionId).
 
-handle_post_notification(#{<<"method">> := <<"notifications/cancelled">>} = Notification, SessionId) ->
-    do_notification_in_session(Notification, SessionId, fun emcp_session:cancelled/2); %% (Pid, Params)
-
-handle_post_notification(Notification, _SessionId) ->
-    logger:error("Unknown notification:~n~p~n", [Notification]),
-    noreply.
 
 register_session(SessionId, Pid) ->
     true = ets:insert(mcp_sessions, {SessionId, Pid}),
     ok.
 
-do_call_in_session(Request, SessionId, CallFun) ->
+do_call_in_session(#{<<"method">> := Method} = Request, SessionId) ->
     RequestId = maps:get(<<"id">>, Request),
     Params = maps:get(<<"params">>, Request, #{}),
     do_in_session(SessionId, fun(Pid) ->
-        CallFun(Pid, RequestId, Params)
+        emcp_session:in_request(Pid, Method, RequestId, Params)
     end).
 
-do_notification_in_session(Notification, SessionId, NotifFun) ->
+do_notification_in_session(#{<<"method">> := Method} = Notification, SessionId) ->
     Params = maps:get(<<"params">>, Notification, #{}),
     do_in_session(SessionId, fun(Pid) ->
-        NotifFun(Pid, Params)
+        emcp_session:in_notification(Pid, Method, Params)
     end).
 
 do_in_session(SessionId, Fun) ->
@@ -272,18 +250,18 @@ do_in_session(SessionId, Fun) ->
             {error, 400,
              #{<<"jsonrpc">> => <<"2.0">>,
                <<"error">> => #{<<"code">> => -32001, <<"message">> => <<"Invalid session">>,
-                               <<"data">> => unicode:characters_to_binary(io_lib:format("~p", [Reason]))}}}
+                                <<"data">> => unicode:characters_to_binary(io_lib:format("~p", [Reason]))}}}
     end.
 
+find_session(undefined) ->
+    {error, undefined};
 find_session(SessionId) when is_binary(SessionId) ->
     case ets:lookup(mcp_sessions, SessionId) of
         [{SessionId, Pid}] ->
             {ok, Pid};
         [] ->
             {error, not_found}
-    end;
-find_session(_) ->
-    {error, invalid_session_id}.
+    end.
 
 gen_uuid_v7() ->
     %% 1. Get current Unix time in milliseconds

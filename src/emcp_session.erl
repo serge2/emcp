@@ -5,16 +5,8 @@
 -export([start/2,
          stop/1,
          get_output_buf/1,
-         initialize/3,
-         initialized/2,
-         tools_list/3,
-         tools_call/3,
-         resources_list/3,
-         resources_read/3,
-         prompts_list/3,
-         prompts_get/3,
-         cancelled/2,
-         ping/3
+         in_request/4,
+         in_notification/3
         ]).
 %%-export([start_link/0]).
 
@@ -34,35 +26,27 @@ stop(Pid) ->
 get_output_buf(Pid) ->
     gen_server:call(Pid, get_output_buf).
 
-initialize(Pid, _RequestId, Params) ->
-    gen_server:call(Pid, {initialize, Params}).
-
-initialized(Pid, _Params) ->
-    gen_server:call(Pid, initialized).
-
-tools_list(Pid, RequestId, _Params) ->
-    gen_server:call(Pid, {tools_list, RequestId}).
-
-tools_call(Pid, RequestId, Params) ->
-    gen_server:call(Pid, {tools_call, RequestId, Params}, infinity).
-
-resources_list(Pid, RequestId, _Params) ->
-    gen_server:call(Pid, {resources_list, RequestId}).
-
-resources_read(Pid, RequestId, Params) ->
-    gen_server:call(Pid, {resources_read, RequestId, Params}).
-
-prompts_list(Pid, RequestId, _Params) ->
-    gen_server:call(Pid, {prompts_list, RequestId}).
-
-prompts_get(Pid, RequestId, Params) ->
-    gen_server:call(Pid, {prompts_get, RequestId, Params}).
-
-cancelled(Pid, Params) ->
-    gen_server:call(Pid, {cancelled, Params}).
-
-ping(Pid, RequestId, _Params) ->
+in_request(Pid, <<"initialize">>, _RequestId, Params) ->
+    gen_server:call(Pid, {initialize, Params});
+in_request(Pid, <<"tools/list">>, RequestId, _Params) ->
+    gen_server:call(Pid, {tools_list, RequestId});
+in_request(Pid, <<"tools/call">>, RequestId, Params) ->
+    gen_server:call(Pid, {tools_call, RequestId, Params});
+in_request(Pid, <<"resources/list">>, RequestId, _Params) ->
+    gen_server:call(Pid, {resources_list, RequestId});
+in_request(Pid, <<"resources/read">>, RequestId, Params) ->
+    gen_server:call(Pid, {resources_read, RequestId, Params});
+in_request(Pid, <<"prompts/list">>, RequestId, _Params) ->
+    gen_server:call(Pid, {prompts_list, RequestId});
+in_request(Pid, <<"prompts/get">>, RequestId, Params) ->
+    gen_server:call(Pid, {prompts_get, RequestId, Params});
+in_request(Pid, <<"ping">>, RequestId, _Params) ->
     gen_server:call(Pid, {ping, RequestId}).
+
+in_notification(Pid, <<"notifications/cancelled">>, Params) ->
+    gen_server:call(Pid, {cancelled, Params});
+in_notification(Pid, <<"notifications/initialized">>, Params) ->
+    gen_server:call(Pid, {initialized, Params}).
 
 
 %% gen_server callbacks
