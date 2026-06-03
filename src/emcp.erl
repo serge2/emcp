@@ -1,6 +1,9 @@
 -module(emcp).
 -export([start/8, stop/1]).
-
+-ignore_xref([
+    {emcp, start, 8},
+    {emcp, stop, 1}
+]).
 
 -callback schema() ->
     #{
