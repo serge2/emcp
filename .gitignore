@@ -1,4 +1,5 @@
 _build/
+logs/
 rebar.lock
 config/ca.cert.pem
 config/server.cert.pem
