@@ -31,7 +31,7 @@ in_request(Pid, <<"initialize">>, _RequestId, Params) ->
 in_request(Pid, <<"tools/list">>, RequestId, _Params) ->
     gen_server:call(Pid, {tools_list, RequestId});
 in_request(Pid, <<"tools/call">>, RequestId, Params) ->
-    gen_server:call(Pid, {tools_call, RequestId, Params});
+    gen_server:call(Pid, {tools_call, RequestId, Params}, 300_000); %% longer timeout for potentially long-running tool calls
 in_request(Pid, <<"resources/list">>, RequestId, _Params) ->
     gen_server:call(Pid, {resources_list, RequestId});
 in_request(Pid, <<"resources/read">>, RequestId, Params) ->
