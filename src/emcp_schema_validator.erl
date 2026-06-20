@@ -22,7 +22,12 @@ validate_tools_params(Schema, _Params) when not is_map(Schema) ->
 validate_tools_params(_Schema, Params) when not is_map(Params) ->
     {error, <<"invalid_params">>};
 validate_tools_params(Schema, Params) ->
-    validate_object(Schema, Params).
+    case jesse:validate_with_schema(Schema, Params) of
+        {ok, NormalizedParams} ->
+            {ok, NormalizedParams};
+        {error, Reason} ->
+            {error, unicode:characters_to_binary(io_lib:format("~tp", [Reason]))}
+    end.
 
 
 %% validate_prompt_params(Schema, Params) ->

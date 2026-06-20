@@ -161,8 +161,6 @@ stream_chunks(StreamReq, [H | T]) ->
     no_return().
 handle_post_jsonrpc(#{<<"jsonrpc">> := <<"2.0">>, <<"method">> := _, <<"id">> := RequestId} = Request, SessionId, McpInfo) ->
     case handle_post_call(Request, SessionId, McpInfo) of
-        {noreply, OutputBuf} ->
-            {202, #{}, <<>>, OutputBuf};
         {{reply, ReplyRaw}, OutputBuf} ->
             Reply = #{<<"jsonrpc">> => <<"2.0">>, <<"id">> => RequestId, <<"result">> => ReplyRaw},
             logger:info("HTTP Reply(raw):~n~tp~n", [Reply]),
@@ -179,14 +177,8 @@ handle_post_jsonrpc(#{<<"jsonrpc">> := <<"2.0">>, <<"method">> := _, <<"id">> :=
 handle_post_jsonrpc(#{<<"jsonrpc">> := <<"2.0">>, <<"method">> := _} = Notification, SessionId, _McpInfo) ->
     case handle_post_notification(Notification, SessionId) of
         {noreply, OutputBuf} ->
-            {202, #{}, <<>>, OutputBuf};
-        {{reply, ReplyRaw}, OutputBuf} ->
-            Reply = #{<<"jsonrpc">> => <<"2.0">>, <<"result">> => ReplyRaw},
-            logger:info("HTTP Reply(raw):~n~tp~n", [Reply]),
-            {200, #{}, jsx:encode(Reply), OutputBuf};
-        {error, ResponseStatus, Reply} ->
-            {ResponseStatus, #{}, jsx:encode(Reply), []}
-    end;
+            {202, #{}, <<>>, OutputBuf}
+   end;
 
 handle_post_jsonrpc(_Json, _SessionId, _McpInfo) ->
     error(client_error).
@@ -241,13 +233,23 @@ do_in_session(SessionId, Fun) ->
                 {reply, Resp} ->
                     OutputBuf = emcp_session:get_output_buf(Pid),
                     {{reply, Resp}, OutputBuf};
-                {error, Status, Resp} ->
-                    {error, Status, Resp}
+                {error, internal} ->
+                    {error, 500,
+                     #{<<"jsonrpc">> => <<"2.0">>,
+                       <<"error">> => #{<<"code">> => -32000,
+                                        <<"message">> => <<"Internal error">>}}};
+                {error, Resp} ->
+                    {error, 400,
+                     #{<<"jsonrpc">> => <<"2.0">>,
+                       <<"error">> => #{<<"code">> => -32001,
+                                        <<"message">> => <<"Invalid request">>,
+                                        <<"data">> => unicode:characters_to_binary(io_lib:format("~p", [Resp]))}}}
             end;
         {error, Reason} ->
             {error, 400,
              #{<<"jsonrpc">> => <<"2.0">>,
-               <<"error">> => #{<<"code">> => -32001, <<"message">> => <<"Invalid session">>,
+               <<"error">> => #{<<"code">> => -32001,
+                                <<"message">> => <<"Invalid session">>,
                                 <<"data">> => unicode:characters_to_binary(io_lib:format("~p", [Reason]))}}}
     end.
 

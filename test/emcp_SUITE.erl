@@ -1,7 +1,7 @@
 -module(emcp_SUITE).
 -include_lib("common_test/include/ct.hrl").
 -include_lib("eunit/include/eunit.hrl").
--compile(export_all).
+-compile([export_all, nowarn_export_all]).
 
 all() -> [
     initialize_test,
@@ -12,6 +12,7 @@ all() -> [
     missing_session_test,
     tools_list_test,
     tools_call_echo_test,
+    tools_call_invalid_arguments_test,
     tools_call_sleep_test,
     sleep_cancel_test,
     resources_list_test,
@@ -142,6 +143,18 @@ tools_call_echo_test(Config) ->
     ResultCall = maps:get(<<"result">>, RespCall),
     Content = maps:get(<<"content">>, ResultCall),
     ?assertEqual(<<"Hello CT">>, maps:get(<<"text">>, Content)).
+
+tools_call_invalid_arguments_test(Config) ->
+    Url = cfg_get(Config, url),
+    Sess = cfg_get(Config, session),
+    CallReq = jsx:encode(#{<<"jsonrpc">> => <<"2.0">>, <<"id">> => 23, <<"method">> => <<"tools/call">>,
+                           <<"params">> => #{ <<"name">> => <<"echo">>, <<"arguments">> => #{ <<"message">> => 123 } } }),
+    HeadersCall = [{"x-api-key", "demo"}, {"mcp-session-id", Sess}],
+    {ok, {{_P,400,_}, _H3, BodyCall}} = httpc:request(post, {Url, HeadersCall, "application/json", CallReq}, [], [{body_format, binary}]),
+    RespCall = jsx:decode(BodyCall, [return_maps]),
+    Error = maps:get(<<"error">>, RespCall),
+    ?assertEqual(-32001, maps:get(<<"code">>, Error)),
+    ?assertEqual(<<"Invalid request">>, maps:get(<<"message">>, Error)).
 
 tools_call_sleep_test(Config) ->
     Url = cfg_get(Config, url),

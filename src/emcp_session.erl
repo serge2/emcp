@@ -13,8 +13,6 @@
 %% gen_server callbacks
 -export([init/1, handle_call/3, handle_cast/2, handle_info/2, terminate/2, code_change/3]).
 
-%% Types
--define(SERVER, ?MODULE).
 
 %% API
 start(SessionId, McpInfo) ->
@@ -26,6 +24,8 @@ stop(Pid) ->
 get_output_buf(Pid) ->
     gen_server:call(Pid, get_output_buf).
 
+-spec in_request(pid(), Name::binary(), RequestId::integer(), Params::map()) -> {reply, map()} | {error, Error} when
+        Error :: unsupported_tool | {invalid_arguments, binary()} | unsupported_resource | unsupported_prompt | internal.
 in_request(Pid, <<"initialize">>, _RequestId, Params) ->
     gen_server:call(Pid, {initialize, Params});
 in_request(Pid, <<"tools/list">>, RequestId, _Params) ->
@@ -207,8 +207,8 @@ handle_call({prompts_get, RequestId, #{<<"name">> := NameBin, <<"arguments">> :=
                                 error ->
                                     {error, unsupported_prompt}
                             end;
-                        {error, _ValidationError} ->
-                            {error, invalid_arguments}
+                        {error, ValidationError} ->
+                            {error, {invalid_arguments, ValidationError}}
                     end;
                 error ->
                     {error, unsupported_prompt}
