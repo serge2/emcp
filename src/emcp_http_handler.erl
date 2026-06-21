@@ -3,6 +3,12 @@
 
 -export([init/2]).
 
+-define(PARSE_ERROR, -32700).
+-define(INVALID_REQUEST, -32600).
+-define(METHOD_NOT_FOUND, -32601).
+-define(INVALID_PARAMS, -32602).
+-define(INTERNAL_ERROR, -32603).
+
 
 init(Req0, State) ->
     Method = cowboy_req:method(Req0),
@@ -15,10 +21,10 @@ init(Req0, State) ->
             Req = cowboy_req:reply(
                 405,
                 #{
-                    <<"content-type">> => <<"application/json">>,
+                    <<"content-type">> => <<"plain/text">>,
                     <<"allow">> => <<"POST, DELETE">>
                 },
-                <<"{\"error\":\"method_not_allowed\"}">>,
+                <<"Method Not Allowed">>,
                 Req0
             ),
             {ok, Req, undefined}
@@ -53,15 +59,19 @@ handle_post(Req0, #{api_keys := ApiKeys, module := McpModule, extra_params := Ex
                     catch
                         Class:Reason:Stack ->
                             logger:error("handle_post_jsonrpc exception:~n~p:~p ~tp", [Class, Reason, Stack]),
-                            Req4 = cowboy_req:reply(400, #{<<"content-type">> => <<"application/json">>},
-                                                    <<"{\"jsonrpc\":\"2.0\",\"error\":{\"code\":-32603,\"message\":\"Internal error\"}}">>, Req1),
+                            Error = #{<<"jsonrpc">> => <<"2.0">>,
+                                      <<"error">> => #{<<"code">> => ?INTERNAL_ERROR,
+                                                       <<"message">> => <<"Internal error">>}},
+                            Req4 = cowboy_req:reply(500, #{<<"content-type">> => <<"application/json">>}, jsx:encode(Error), Req1),
                             {ok, Req4, undefined}
                     end
             catch
                 _Class:_Reason:_Stack ->
                     logger:error("Failed to decode request body. Headers:~n~tp~nBody:~n~ts~n", [Headers, Body]),
-                    Req2 = cowboy_req:reply(400, #{<<"content-type">> => <<"application/json">>},
-                                            <<"{\"jsonrpc\":\"2.0\",\"error\":{\"code\":-32700,\"message\":\"Parse error\"}}">>, Req1),
+                    Error = #{<<"jsonrpc">> => <<"2.0">>,
+                              <<"error">> => #{<<"code">> => ?PARSE_ERROR,
+                                               <<"message">> => <<"Parse error">>}},
+                    Req2 = cowboy_req:reply(400, #{<<"content-type">> => <<"application/json">>}, jsx:encode(Error), Req1),
                     {ok, Req2, undefined}
             end;
         {error, Reason} ->
@@ -84,11 +94,17 @@ handle_delete(Req, #{api_keys := ApiKeys} = _State) ->
                                                    <<"connection">> => <<"close">>},
                                             <<"{\"ok\":true}">>, Req),
                     {ok, Req2, undefined};
-                {error, Reason} ->
+                {error, undefined} ->
                     Error = #{<<"jsonrpc">> => <<"2.0">>,
-                              <<"error">> => #{<<"code">> => -32001, <<"message">> => <<"Invalid session">>,
-                                               <<"data">> => unicode:characters_to_binary(io_lib:format("~p", [Reason]))}},
+                              <<"error">> => #{<<"code">> => ?INVALID_REQUEST,
+                                               <<"message">> => <<"Invalid session">>}},
                     Req2 = cowboy_req:reply(400, #{<<"content-type">> => <<"application/json">>}, jsx:encode(Error), Req),
+                    {ok, Req2, undefined};
+                {error, not_found} ->
+                    Error = #{<<"jsonrpc">> => <<"2.0">>,
+                              <<"error">> => #{<<"code">> => ?INVALID_REQUEST,
+                                               <<"message">> => <<"Session not found">>}},
+                    Req2 = cowboy_req:reply(404, #{<<"content-type">> => <<"application/json">>}, jsx:encode(Error), Req),
                     {ok, Req2, undefined}
             end;
         {error, Reason} ->
@@ -236,23 +252,30 @@ do_in_session(SessionId, Fun) ->
                 {error, internal} ->
                     {error, 500,
                      #{<<"jsonrpc">> => <<"2.0">>,
-                       <<"error">> => #{<<"code">> => -32000,
+                       <<"error">> => #{<<"code">> => ?INTERNAL_ERROR,
                                         <<"message">> => <<"Internal error">>}}};
                 {error, Resp} ->
                     {error, 400,
                      #{<<"jsonrpc">> => <<"2.0">>,
-                       <<"error">> => #{<<"code">> => -32001,
+                       <<"error">> => #{<<"code">> => ?INVALID_REQUEST,
                                         <<"message">> => <<"Invalid request">>,
                                         <<"data">> => unicode:characters_to_binary(io_lib:format("~p", [Resp]))}}}
             end;
-        {error, Reason} ->
+        {error, undefined} ->
             {error, 400,
              #{<<"jsonrpc">> => <<"2.0">>,
-               <<"error">> => #{<<"code">> => -32001,
-                                <<"message">> => <<"Invalid session">>,
-                                <<"data">> => unicode:characters_to_binary(io_lib:format("~p", [Reason]))}}}
+               <<"error">> => #{<<"code">> => ?INVALID_REQUEST,
+                                <<"message">> => <<"Invalid session">>}}};
+        {error, not_found} ->
+            {error, 404,
+             #{<<"jsonrpc">> => <<"2.0">>,
+               <<"error">> => #{<<"code">> => ?INVALID_REQUEST,
+                                <<"message">> => <<"Session not found">>}}}
     end.
 
+
+-spec find_session(binary() | undefined) -> {ok, pid()} | {error, Error} when
+    Error :: not_found | undefined.
 find_session(undefined) ->
     {error, undefined};
 find_session(SessionId) when is_binary(SessionId) ->
@@ -263,6 +286,7 @@ find_session(SessionId) when is_binary(SessionId) ->
             {error, not_found}
     end.
 
+-spec gen_uuid_v7() -> UUID::binary().
 gen_uuid_v7() ->
     %% 1. Get current Unix time in milliseconds
     SystemMillis = erlang:system_time(millisecond),
@@ -282,11 +306,13 @@ gen_uuid_v7() ->
     <<C1/binary, "-", C2/binary, "-", C3/binary, "-", C4/binary, "-", C5/binary>>.
 
 
+-spec get_session_id(cowboy_req:req()) -> binary() | undefined.
 get_session_id(Req) ->
     cowboy_req:header(<<"mcp-session-id">>, Req, undefined).
 
 
-%% new helpers: API key support (configured in app config as mcp, api_keys = [<<"key1">>, "key2", ...])
+%% API key support (configured in app config as mcp, api_keys = [<<"key1">>, "key2", ...])
+-spec validate_api_key(cowboy_req:req(), [binary()]) -> ok | {error, Reason::binary()}.
 validate_api_key(Req, ApiKeys) when  is_list(ApiKeys) ->
     case get_api_key_from_headers(Req) of
         undefined ->

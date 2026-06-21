@@ -89,11 +89,11 @@ invalid_session_test(Config) ->
     %% Use valid API key but invalid session id
     HeadersBadSess = [{"x-api-key", "demo"}, {"mcp-session-id", "does-not-exist"}],
     ToolsReq = jsx:encode(#{<<"jsonrpc">> => <<"2.0">>, <<"id">> => 999, <<"method">> => <<"tools/list">>, <<"params">> => #{}}),
-    {ok, {{_P,400,_}, _H, Body}} = httpc:request(post, {Url, HeadersBadSess, "application/json", ToolsReq}, [], [{body_format, binary}]),
+    {ok, {{_P,404,_}, _H, Body}} = httpc:request(post, {Url, HeadersBadSess, "application/json", ToolsReq}, [], [{body_format, binary}]),
     Resp = jsx:decode(Body, [return_maps]),
     Error = maps:get(<<"error">>, Resp),
-    ?assertEqual(-32001, maps:get(<<"code">>, Error)),
-    ?assertEqual(<<"Invalid session">>, maps:get(<<"message">>, Error)).
+    ?assertEqual(-32600, maps:get(<<"code">>, Error)),
+    ?assertEqual(<<"Session not found">>, maps:get(<<"message">>, Error)).
 
 %% Test: Authorization header with Bearer token should work as API key
 auth_bearer_header_test(Config) ->
@@ -119,7 +119,7 @@ missing_session_test(Config) ->
     {ok, {{_P,400,_}, _H, Body}} = httpc:request(post, {Url, [{"x-api-key","demo"}], "application/json", ToolsReq}, [], [{body_format, binary}]),
     Resp = jsx:decode(Body, [return_maps]),
     Error = maps:get(<<"error">>, Resp),
-    ?assertEqual(-32001, maps:get(<<"code">>, Error)),
+    ?assertEqual(-32600, maps:get(<<"code">>, Error)),
     ?assertEqual(<<"Invalid session">>, maps:get(<<"message">>, Error)).
 
 tools_list_test(Config) ->
@@ -153,7 +153,7 @@ tools_call_invalid_arguments_test(Config) ->
     {ok, {{_P,400,_}, _H3, BodyCall}} = httpc:request(post, {Url, HeadersCall, "application/json", CallReq}, [], [{body_format, binary}]),
     RespCall = jsx:decode(BodyCall, [return_maps]),
     Error = maps:get(<<"error">>, RespCall),
-    ?assertEqual(-32001, maps:get(<<"code">>, Error)),
+    ?assertEqual(-32600, maps:get(<<"code">>, Error)),
     ?assertEqual(<<"Invalid request">>, maps:get(<<"message">>, Error)).
 
 tools_call_sleep_test(Config) ->
