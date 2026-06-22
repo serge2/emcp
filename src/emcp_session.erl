@@ -45,8 +45,8 @@ in_request(Pid, <<"ping">>, RequestId, _Params) ->
 
 in_notification(Pid, <<"notifications/cancelled">>, Params) ->
     gen_server:call(Pid, {cancelled, Params});
-in_notification(Pid, <<"notifications/initialized">>, Params) ->
-    gen_server:call(Pid, {initialized, Params}).
+in_notification(Pid, <<"notifications/initialized">>, _Params) ->
+    gen_server:call(Pid, initialized).
 
 
 %% gen_server callbacks
