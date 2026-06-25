@@ -3,12 +3,17 @@
 
 %% API
 -export([start/2,
+         start_link/2,
          stop/1,
          get_output_buf/1,
          in_request/4,
          in_notification/3
         ]).
-%%-export([start_link/0]).
+
+-ignore_xref([
+    {?MODULE, start, 2},
+    {?MODULE, start_link,2}
+]).
 
 %% gen_server callbacks
 -export([init/1, handle_call/3, handle_cast/2, handle_info/2, terminate/2, code_change/3]).
@@ -17,6 +22,9 @@
 %% API
 start(SessionId, McpInfo) ->
     gen_server:start(?MODULE, [SessionId, McpInfo], []).
+
+start_link(SessionId, McpInfo) ->
+    gen_server:start_link(?MODULE, [SessionId, McpInfo], []).
 
 stop(Pid) ->
     gen_server:call(Pid, stop).

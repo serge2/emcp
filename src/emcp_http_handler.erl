@@ -204,7 +204,7 @@ handle_post_jsonrpc(_Json, _SessionId, _McpInfo) ->
 handle_post_call(#{<<"method">> := <<"initialize">>} = Request, _SessionId, McpInfo) ->
     logger:info("Initializing new MCP session..."),
     SessionId = gen_uuid_v7(),
-    {ok, Pid} = emcp_session:start(SessionId, McpInfo),
+    {ok, Pid} = emcp_sup:start_session(SessionId, McpInfo), 
     ok = register_session(SessionId, Pid),
     logger:info("Initialized new MCP session ~p with pid ~p", [SessionId, Pid]),
     case do_call_in_session(Request, SessionId) of 
