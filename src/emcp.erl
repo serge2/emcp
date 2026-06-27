@@ -1,8 +1,9 @@
 -module(emcp).
--export([start/8, stop/1]).
+-export([start/8, stop/1, cowboy_route/4]).
 -ignore_xref([
     {emcp, start, 8},
-    {emcp, stop, 1}
+    {emcp, stop, 1},
+    {emcp, cowboy_route, 4}
 ]).
 
 -callback schema() ->
@@ -16,17 +17,26 @@
       prompts := []
      }.
 
-
-start(Name, Module, IP, Port, Path, UseTLS, AllowedApiKeys, ExtraParams) ->
-    AllowedKeys = normalize_api_keys(AllowedApiKeys),
-    if AllowedKeys == [] ->
-           logger:info("No API keys configured; all requests will be accepted.");
-       true ->
-           logger:info("API key authentication enabled; ~w keys configured.", [length(AllowedKeys)])
-    end,
+-spec start(Name, Module, IP, Port, Path, UseTLS, AllowedApiKeys, ExtraParams) -> {ok, pid()} | {error, term()} when
+      Name :: atom(),
+      Module :: module(),
+      IP :: tuple(),
+      Port :: integer(),
+      Path :: binary() | string(),
+      UseTLS :: boolean(),
+      AllowedApiKeys :: [binary()],
+      ExtraParams :: map().
+start(Name, Module, IP, Port, Path, UseTLS, AllowedApiKeys, ExtraParams) when
+  is_atom(Name),
+  is_atom(Module),
+  is_tuple(IP),
+  is_integer(Port),
+  is_binary(Path) orelse is_list(Path),
+  is_boolean(UseTLS),
+  is_list(AllowedApiKeys),
+  is_map(ExtraParams) ->
     Dispatch = cowboy_router:compile([
-        {'_', [{list_to_binary([Path, <<"/[...]">>]), emcp_http_handler,
-             #{api_keys => AllowedKeys, module => Module, extra_params => ExtraParams} }]}
+        {'_', [cowboy_route(Path, Module, AllowedApiKeys, ExtraParams)]}
     ]),
 
     if not UseTLS ->
@@ -53,19 +63,37 @@ start(Name, Module, IP, Port, Path, UseTLS, AllowedApiKeys, ExtraParams) ->
                                        })
     end.
 
+-spec stop(Name) -> ok when Name :: atom().
 stop(Name) ->
     logger:info("Stopping MCP listener ~p...", [Name]),
     cowboy:stop_listener(Name).
 
-normalize_api_keys(Keys) ->
-    case Keys of
-        K when is_list(K) ->
-            [to_binary_normalized(X) || X <- K];
-        K when is_binary(K) ->
-            [K];
-        _ ->
-            [] % unexpected config -> treat as no keys
-    end.
+-spec cowboy_route(Path, Module, AllowedApiKeys, ExtraParams) -> {PathMatch::any(), Handler::module(), Opts::any()} when
+      Path :: binary() | string(),
+      Module :: module(),
+      AllowedApiKeys :: [binary() | list()],
+      ExtraParams :: map().
+cowboy_route(Path, Module, AllowedApiKeys, ExtraParams) when
+      is_binary(Path) orelse is_list(Path),
+      is_atom(Module),
+      is_list(AllowedApiKeys),
+      is_map(ExtraParams) ->
+    if AllowedApiKeys == [] ->
+           logger:info("No API keys configured; all requests will be failed.");
+       true ->
+           logger:info("API key authentication enabled; ~w keys configured.", [length(AllowedApiKeys)])
+    end,
+    NormalizedKeys = normalize_api_keys(AllowedApiKeys),
+    {
+        list_to_binary([Path, <<"/[...]">>]),
+        emcp_http_handler,
+        #{api_keys => NormalizedKeys, module => Module, extra_params => ExtraParams}
+    }.
 
+-spec normalize_api_keys(Keys :: [binary() | list()] ) -> [binary()].
+normalize_api_keys(Keys) ->
+    [to_binary_normalized(X) || X <- Keys].
+
+-spec to_binary_normalized(Item :: binary() | list()) -> binary().
 to_binary_normalized(Item) when is_binary(Item) -> Item;
 to_binary_normalized(Item) when is_list(Item) -> unicode:characters_to_binary(Item).
