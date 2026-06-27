@@ -28,7 +28,7 @@ all() -> [
 
 init_per_suite(Config) ->
     {ok, _} = application:ensure_all_started(emcp),
-    Port = find_free_port(18100, 18200),
+    Port = find_free_port(),
     ?assert(is_integer(Port)),
     Name = list_to_atom("emcp_ct_" ++ integer_to_list(Port)),
     ?assert(start_emcp_listener(Name, Port)), %% listener with demo api key for tests
@@ -37,12 +37,20 @@ init_per_suite(Config) ->
     [{port, Port}, {listener, Name}, {url, Url} | Config].
 
 end_per_suite(Config) ->
-    case lists:keyfind(listener, 1, Config) of
-        {listener, Name} -> catch emcp:stop(Name), ok;
-        _ -> ok
-    end.
+    Name = cfg_get(Config, listener),
+    emcp:stop(Name).
     
 
+init_per_testcase(initialize_test, Config) ->
+    Config;
+init_per_testcase(invalid_api_key_test, Config) ->
+    Config;
+init_per_testcase(invalid_session_test, Config) ->
+    Config;
+init_per_testcase(missing_api_key_test, Config) ->
+    Config;
+init_per_testcase(missing_session_test, Config) ->
+    Config;
 init_per_testcase(_TestCase, Config) ->
     Url = cfg_get(Config, url),
     InitReq = jsx:encode(#{<<"jsonrpc">> => <<"2.0">>, <<"id">> => 1, <<"method">> => <<"initialize">>, <<"params">> => #{}}),
@@ -53,7 +61,22 @@ init_per_testcase(_TestCase, Config) ->
     {ok, {{_Prot2, 202, _}, _H2, _B2}} = httpc:request(post, {Url, HeadersNotif, "application/json", Notif}, [], [{body_format, binary}]),
     [{session, Sess} | Config].
 
-% The cleamup_test case will delete the session, so we only need to do this for other test cases
+% The session will be created inside the initialize_test case, so we do not need to delete it for that test case
+end_per_testcase(initialize_test, _Config) ->
+    ok;
+% There is no session to delete for this test case
+end_per_testcase(invalid_api_key_test, _Config) ->
+    ok;
+% There is no session to delete for this test case
+end_per_testcase(invalid_session_test, _Config) ->
+    ok;
+% There is no session to delete for this test case
+end_per_testcase(missing_api_key_test, _Config) ->
+    ok;
+% There is no session to delete for this test case
+end_per_testcase(missing_session_test, _Config) ->
+    ok;
+% The cleanup_test case will delete the session, so we only need to do this for other test cases
 end_per_testcase(cleanup_test, _Config) ->
     ok;
 
@@ -271,35 +294,19 @@ cleanup_test(Config) ->
     ct:log("cleanup_test Config: ~p~n", [Config]),
     Url = cfg_get(Config, url),
     Sess = cfg_get(Config, session),    
-    {ok, {{_P,200,_}, _H, _B}} = httpc:request(delete, {Url, [{"x-api-key", "demo"}, {"mcp-session-id", Sess}]}, [], [{body_format, binary}]),
-    catch emcp:stop(cfg_get(Config, listener)).
+    {ok, {{_P,200,_}, _H, _B}} = httpc:request(delete, {Url, [{"x-api-key", "demo"}, {"mcp-session-id", Sess}]}, [], [{body_format, binary}]).
 
 %% Helpers
-
-add_session(Config, Sess) ->
-    lists:keystore(session, 1, Config, {session, Sess}).
 
 cfg_get(Config, Key) ->
     {Key, Val} = lists:keyfind(Key, 1, Config),
     Val.
 
-find_free_port(From, To) when From =< To ->
-    case try_start_any(From) of
-        {ok, Port} -> Port;
-        error -> find_free_port(From + 1, To)
-    end;
-find_free_port(_, _) ->
-    ct:fail("No free port found in range").
-
-try_start_any(Port) ->
-    Name = list_to_atom("emcp_ct_" ++ integer_to_list(Port)),
-    try
-        emcp:start(Name, test_mcp, {127,0,0,1}, Port, "/mcp", false, [], #{root_dir => "/tmp"}),
-        emcp:stop(Name),
-        {ok, Port}
-    catch _:_ ->
-        error
-    end.
+find_free_port() ->
+    {ok, Socket} = gen_tcp:listen(0, [{ip, {127, 0, 0, 1}}]),
+    {ok, {_IP, Port}} = inet:sockname(Socket),
+    gen_tcp:close(Socket),
+    Port.
 
 start_emcp_listener(Name, Port) ->
     try
