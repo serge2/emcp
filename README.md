@@ -11,9 +11,10 @@ emcp is a small Erlang framework that simplifies building MCP‑compatible servi
 ## Features
 
 - JSON‑RPC over HTTP(S) for session initialization and tool/resource calls
-- Declarative tool/resource schemas and automatic (partial) validation of input parameters
+- Declarative tool/resource schemas and automatic validation of input parameters
 - Per‑session state, tracking of active requests and request cancellation
 - Easy extension: add new tools and resources by declaring schemas and implementing handler functions
+- At the moment, the framework does not provide OAuth 2.1-based user authorization; use API keys for access control instead
 
 ## Quick start (integration example)
 
@@ -123,12 +124,15 @@ prompts_code_review(_Name, #{<<"code">> := Code}, _Extra) ->
 
 ```erlang
 [
- {my_app, [{my_app_emcp_api_keys, ["secret-key-1"]}]},
+ {my_app, [{api_keys, ["secret-key-1"]}]},
  {emcp, [{tls, [{keyfile, "/etc/ssl/key.pem"}, {certfile, "/etc/ssl/cert.pem"}]}]}
 ].
 ```
 
-4. Add start of the mcp listener to the application module:
+4. There are two ways to start an MCP server: as a dedicated http-listener or as a part of a custom cowboy listener
+
+Start the MCP as a dedicated listener:
+
 ```erlang
 -module(my_app_app).
 
@@ -137,7 +141,7 @@ prompts_code_review(_Name, #{<<"code">> := Code}, _Extra) ->
 -export([start/2, stop/1]).
 
 start(_StartType, _StartArgs) ->
-    AllowedApiKeys = application:get_env(my_app, my_app_emcp_api_keys, []),
+    AllowedApiKeys = application:get_env(my_app, api_keys, []),
     emcp:start(my_app_mcp_listener, my_app_mcp, {0,0,0,0}, 8080, "/mcp", _UseTLS = false, AllowedApiKeys, _Extra = #{root_dir => "/var/my_app/data"}),
     my_app_sup:start_link().
 
@@ -145,6 +149,38 @@ stop(_State) ->
     emcp:stop(my_app_mcp_listener),
     ok.
 ```
+
+Start the MCP as a part of a custom listener:
+
+```erlang
+-module(my_app_app).
+
+-behaviour(application).
+
+-export([start/2, stop/1]).
+
+start(_StartType, _StartArgs) ->
+    AllowedApiKeys = application:get_env(my_app, api_keys, []),
+
+    Dispatch = cowboy_router:compile([
+        {'_', [
+          emcp:cowboy_route("/mcp", test_mcp, AllowedApiKeys, #{}), % The route for the MCP
+          {<<"/[...]">>, main_handler, #{}}     % A route for another requests
+        ]}
+    ]),
+
+    {ok, _} = cowboy:start_clear(
+        http_listener,
+        [{port, 8080}, {ip, {0,0,0,0}}],
+        #{env => #{dispatch => Dispatch}}
+    ),
+    my_app_sup:start_link().
+
+stop(_State) ->
+    cowboy:stop_listener(http_listener),
+    ok.
+```
+
 
 
 5. Build and run your application:
