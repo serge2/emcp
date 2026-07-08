@@ -211,53 +211,68 @@ register_session(SessionId, Pid) ->
 do_call_in_session(#{<<"method">> := Method} = Request, SessionId) ->
     RequestId = maps:get(<<"id">>, Request),
     Params = maps:get(<<"params">>, Request, #{}),
-    do_in_session(SessionId, fun(Pid) ->
-        emcp_session:in_request(Pid, Method, RequestId, Params)
-    end).
-
-do_notification_in_session(#{<<"method">> := Method} = Notification, SessionId) ->
-    Params = maps:get(<<"params">>, Notification, #{}),
-    do_in_session(SessionId, fun(Pid) ->
-        emcp_session:in_notification(Pid, Method, Params)
-    end).
-
-do_in_session(SessionId, Fun) ->
     case find_session(SessionId) of
         {ok, Pid} ->
-            case Fun(Pid) of
-                noreply ->
-                    OutputBuf = emcp_session:get_output_buf(Pid),
-                    {noreply, OutputBuf};
+            case emcp_session:in_request(Pid, Method, RequestId, Params) of
                 {reply, Resp} ->
                     OutputBuf = emcp_session:get_output_buf(Pid),
                     {{reply, Resp}, OutputBuf};
                 {error, internal} ->
                     {error, 500,
                      #{<<"jsonrpc">> => <<"2.0">>,
+                       <<"id">> => RequestId,
                        <<"error">> => #{<<"code">> => ?INTERNAL_ERROR,
                                         <<"message">> => <<"Internal error">>}}};
                 {error, unsupported_resource} ->
                     {error, 400,
                      #{<<"jsonrpc">> => <<"2.0">>,
+                       <<"id">> => RequestId,
                        <<"error">> => #{<<"code">> => ?RESOURCE_NOT_FOUND,
                                         <<"message">> => <<"Resource not found">>}}};
                 {error, unsupported_prompt} ->
                     {error, 400,
                      #{<<"jsonrpc">> => <<"2.0">>,
+                       <<"id">> => RequestId,
                        <<"error">> => #{<<"code">> => ?INVALID_PARAMS,
                                         <<"message">> => <<"Invalid prompt name">>}}};
                 {error, unsupported_tool} ->
                     {error, 400,
                      #{<<"jsonrpc">> => <<"2.0">>,
+                       <<"id">> => RequestId,
                        <<"error">> => #{<<"code">> => ?INVALID_PARAMS,
                                         <<"message">> => <<"Unknown tool">>}}};
                 {error, Resp} ->
                     {error, 400,
                      #{<<"jsonrpc">> => <<"2.0">>,
+                       <<"id">> => RequestId,
                        <<"error">> => #{<<"code">> => ?INVALID_REQUEST,
                                         <<"message">> => <<"Invalid request">>,
                                         <<"data">> => unicode:characters_to_binary(io_lib:format("~p", [Resp]))}}}
             end;
+        {error, undefined} ->
+            {error, 400,
+             #{<<"jsonrpc">> => <<"2.0">>,
+               <<"id">> => RequestId,
+               <<"error">> => #{<<"code">> => ?INVALID_REQUEST,
+                                <<"message">> => <<"Invalid session">>}}};
+        {error, not_found} ->
+            {error, 404,
+             #{<<"jsonrpc">> => <<"2.0">>,
+               <<"id">> => RequestId,
+               <<"error">> => #{<<"code">> => ?INVALID_REQUEST,
+                                <<"message">> => <<"Session not found">>}}}
+    end.
+
+
+do_notification_in_session(#{<<"method">> := Method} = Notification, SessionId) ->
+    Params = maps:get(<<"params">>, Notification, #{}),
+    case find_session(SessionId) of
+        {ok, Pid} ->
+            case emcp_session:in_notification(Pid, Method, Params) of
+                noreply ->
+                    OutputBuf = emcp_session:get_output_buf(Pid),
+                    {noreply, OutputBuf}
+             end;
         {error, undefined} ->
             {error, 400,
              #{<<"jsonrpc">> => <<"2.0">>,
