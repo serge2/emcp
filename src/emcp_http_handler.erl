@@ -9,12 +9,12 @@
 -define(INVALID_PARAMS, -32602).
 -define(INTERNAL_ERROR, -32603).
 
-
-init(Req0, State) ->
+-spec init(cowboy_req:req(), Opts::any()) -> {ok, cowboy_req:req(), State::any()}.
+init(Req0, Opts) ->
     Method = cowboy_req:method(Req0),
     case Method of
-        <<"POST">> -> handle_post(Req0, State);
-        <<"DELETE">> -> handle_delete(Req0, State);
+        <<"POST">> -> handle_post(Req0, Opts);
+        <<"DELETE">> -> handle_delete(Req0, Opts);
         _ ->
             logger:error("Unsupported method: ~ts", [Method]),
             Req = cowboy_req:reply(
@@ -29,74 +29,71 @@ init(Req0, State) ->
             {ok, Req, undefined}
     end.
 
-handle_post(Req0, #{api_keys := ApiKeys, module := McpModule, extra_params := ExtraParams} = _State) ->
+handle_post(Req0, #{api_keys := ApiKeys, module := McpModule, extra_params := ExtraParams} = _Opts) ->
     {ok, Body, Req1} = cowboy_req:read_body(Req0),
     Headers = cowboy_req:headers(Req1),
-    case validate_api_key(Req1, ApiKeys) of
-        ok ->
-            try jsx:decode(Body, [return_maps]) of
-                Json ->
-                    logger:info("HTTP Request:~nHeaders:~n~p~nBody:~n~ts~n", [Headers, Body]),
-                    SessionId = get_session_id(Req1),
-                    try handle_post_jsonrpc(Json, SessionId, {McpModule, ExtraParams}) of
-                        {ResponseStatus, OutHeaders, RespBin, OutputBuf} ->
-                            do_reply(Req1, ResponseStatus, OutHeaders, RespBin, OutputBuf)
-                    catch
-                        Class:Reason:Stack ->
-                            logger:error("handle_post_jsonrpc exception:~n~p:~p ~tp", [Class, Reason, Stack]),
-                            Error = #{<<"jsonrpc">> => <<"2.0">>,
-                                      <<"error">> => #{<<"code">> => ?INTERNAL_ERROR,
-                                                       <<"message">> => <<"Internal error">>}},
-                            Req4 = cowboy_req:reply(500, #{<<"content-type">> => <<"application/json">>}, jsx:encode(Error), Req1),
-                            {ok, Req4, undefined}
-                    end
-            catch
-                _Class:_Reason:_Stack ->
-                    logger:error("Failed to decode request body. Headers:~n~tp~nBody:~n~ts~n", [Headers, Body]),
-                    Error = #{<<"jsonrpc">> => <<"2.0">>,
-                              <<"error">> => #{<<"code">> => ?PARSE_ERROR,
-                                               <<"message">> => <<"Parse error">>}},
-                    Req2 = cowboy_req:reply(400, #{<<"content-type">> => <<"application/json">>}, jsx:encode(Error), Req1),
-                    {ok, Req2, undefined}
-            end;
-        {error, Reason} ->
-            logger:error("Invalid API-Key:~ts.~nHTTP Request:~nHeaders:~n~p~nBody:~n~ts~n", [Reason, Headers, Body]),
-            Req = cowboy_req:reply(401, #{<<"content-type">> => <<"plain/text">>}, Reason, Req1),
-            {ok, Req, undefined}
-    end.
+    FinReq =
+        case validate_api_key(Req1, ApiKeys) of
+            ok ->
+                try jsx:decode(Body, [return_maps]) of
+                    Json ->
+                        logger:info("HTTP Request:~nHeaders:~n~p~nBody:~n~ts~n", [Headers, Body]),
+                        SessionId = get_session_id(Req1),
+                        try handle_post_jsonrpc(Json, SessionId, {McpModule, ExtraParams}) of
+                            {ResponseStatus, OutHeaders, RespBin, OutputBuf} ->
+                                do_reply(Req1, ResponseStatus, OutHeaders, RespBin, OutputBuf)
+                        catch
+                            Class:Reason:Stack ->
+                                logger:error("handle_post_jsonrpc exception:~n~p:~p ~tp", [Class, Reason, Stack]),
+                                Error = #{<<"jsonrpc">> => <<"2.0">>,
+                                        <<"error">> => #{<<"code">> => ?INTERNAL_ERROR,
+                                                        <<"message">> => <<"Internal error">>}},
+                                cowboy_req:reply(500, #{<<"content-type">> => <<"application/json">>}, jsx:encode(Error), Req1)
+                        end
+                catch
+                    _Class:_Reason:_Stack ->
+                        logger:error("Failed to decode request body. Headers:~n~tp~nBody:~n~ts~n", [Headers, Body]),
+                        Error = #{<<"jsonrpc">> => <<"2.0">>,
+                                <<"error">> => #{<<"code">> => ?PARSE_ERROR,
+                                                <<"message">> => <<"Parse error">>}},
+                        cowboy_req:reply(400, #{<<"content-type">> => <<"application/json">>}, jsx:encode(Error), Req1)
+                end;
+            {error, Reason} ->
+                logger:error("Invalid API-Key:~ts.~nHTTP Request:~nHeaders:~n~p~nBody:~n~ts~n", [Reason, Headers, Body]),
+                cowboy_req:reply(401, #{<<"content-type">> => <<"plain/text">>}, Reason, Req1)
+        end,
+    {ok, FinReq, undefined}.
 
-handle_delete(Req, #{api_keys := ApiKeys} = _State) ->
+handle_delete(Req, #{api_keys := ApiKeys} = _Opts) ->
     %% Delete session
     Headers = cowboy_req:headers(Req),
-    case validate_api_key(Req, ApiKeys) of
-        ok ->
-            SessionId = get_session_id(Req),
-            case find_session(SessionId) of
-                {ok, Pid} ->
-                    ok = emcp_session:stop(Pid),
-                    true = ets:delete(mcp_sessions, SessionId),
-                    Req2 = cowboy_req:reply(200, #{<<"content-type">> => <<"application/json">>,
-                                                   <<"connection">> => <<"close">>},
-                                            <<"{\"ok\":true}">>, Req),
-                    {ok, Req2, undefined};
-                {error, undefined} ->
-                    Error = #{<<"jsonrpc">> => <<"2.0">>,
-                              <<"error">> => #{<<"code">> => ?INVALID_REQUEST,
-                                               <<"message">> => <<"Invalid session">>}},
-                    Req2 = cowboy_req:reply(400, #{<<"content-type">> => <<"application/json">>}, jsx:encode(Error), Req),
-                    {ok, Req2, undefined};
-                {error, not_found} ->
-                    Error = #{<<"jsonrpc">> => <<"2.0">>,
-                              <<"error">> => #{<<"code">> => ?INVALID_REQUEST,
-                                               <<"message">> => <<"Session not found">>}},
-                    Req2 = cowboy_req:reply(404, #{<<"content-type">> => <<"application/json">>}, jsx:encode(Error), Req),
-                    {ok, Req2, undefined}
-            end;
-        {error, Reason} ->
-            logger:error("Invalid API-Key:~ts.~nHTTP Request:~nHeaders:~n~p~n", [Reason, Headers]),
-            Req = cowboy_req:reply(401, #{<<"content-type">> => <<"plain/text">>}, Reason, Req),
-            {ok, Req, undefined}
-    end.
+    FinReq =
+        case validate_api_key(Req, ApiKeys) of
+            ok ->
+                SessionId = get_session_id(Req),
+                case find_session(SessionId) of
+                    {ok, Pid} ->
+                        ok = emcp_session:stop(Pid),
+                        true = ets:delete(mcp_sessions, SessionId),
+                        cowboy_req:reply(200, #{<<"content-type">> => <<"application/json">>,
+                                                    <<"connection">> => <<"close">>},
+                                                <<"{\"ok\":true}">>, Req);
+                    {error, undefined} ->
+                        Error = #{<<"jsonrpc">> => <<"2.0">>,
+                                <<"error">> => #{<<"code">> => ?INVALID_REQUEST,
+                                                <<"message">> => <<"Invalid session">>}},
+                        cowboy_req:reply(400, #{<<"content-type">> => <<"application/json">>}, jsx:encode(Error), Req);
+                    {error, not_found} ->
+                        Error = #{<<"jsonrpc">> => <<"2.0">>,
+                                <<"error">> => #{<<"code">> => ?INVALID_REQUEST,
+                                                <<"message">> => <<"Session not found">>}},
+                        cowboy_req:reply(404, #{<<"content-type">> => <<"application/json">>}, jsx:encode(Error), Req)
+                end;
+            {error, Reason} ->
+                logger:error("Invalid API-Key:~ts.~nHTTP Request:~nHeaders:~n~p~n", [Reason, Headers]),
+                cowboy_req:reply(401, #{<<"content-type">> => <<"plain/text">>}, Reason, Req)
+        end,
+    {ok, FinReq, undefined}.
 
 
 
@@ -113,10 +110,9 @@ do_reply(Req, ResponseStatus, OutHeaders, RespBin, OutputBuf) ->
     case IsSseSupported of    
         false ->
             %% The client does not support SSE -> return regular JSON
-            ReqJson = cowboy_req:reply(ResponseStatus,
-                                       OutHeaders#{<<"content-type">> => <<"application/json">>},
-                                       RespBin, Req),
-            {ok, ReqJson, undefined};
+            cowboy_req:reply(ResponseStatus,
+                             OutHeaders#{<<"content-type">> => <<"application/json">>},
+                             RespBin, Req);
         true ->
             %% The client supports SSE -> stream chunks
             StreamReq = cowboy_req:stream_reply(ResponseStatus,
@@ -129,13 +125,13 @@ do_reply(Req, ResponseStatus, OutHeaders, RespBin, OutputBuf) ->
                     },
                 Req),
             try
-                stream_chunks(StreamReq, OutputBuf ++ [RespBin])
+                stream_chunks(StreamReq, OutputBuf ++ [RespBin]),
+                StreamReq
             catch Class:Reason:Stack ->
                 logger:error("SSE error ~p:~p ~p", [Class, Reason, Stack]),
                 %% send an empty FIN chunk to close the connection
                 cowboy_req:stream_events(#{data => <<>>}, fin, StreamReq)
-            end,
-            {ok, StreamReq, undefined}
+            end
     end.
 
 
