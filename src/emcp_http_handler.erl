@@ -3,11 +3,12 @@
 
 -export([init/2]).
 
--define(PARSE_ERROR, -32700).
+-define(RESOURCE_NOT_FOUND, -32002).
 -define(INVALID_REQUEST, -32600).
 -define(METHOD_NOT_FOUND, -32601).
 -define(INVALID_PARAMS, -32602).
 -define(INTERNAL_ERROR, -32603).
+-define(PARSE_ERROR, -32700).
 
 -spec init(cowboy_req:req(), Opts::any()) -> {ok, cowboy_req:req(), State::any()}.
 init(Req0, Opts) ->
@@ -235,6 +236,21 @@ do_in_session(SessionId, Fun) ->
                      #{<<"jsonrpc">> => <<"2.0">>,
                        <<"error">> => #{<<"code">> => ?INTERNAL_ERROR,
                                         <<"message">> => <<"Internal error">>}}};
+                {error, unsupported_resource} ->
+                    {error, 400,
+                     #{<<"jsonrpc">> => <<"2.0">>,
+                       <<"error">> => #{<<"code">> => ?RESOURCE_NOT_FOUND,
+                                        <<"message">> => <<"Resource not found">>}}};
+                {error, unsupported_prompt} ->
+                    {error, 400,
+                     #{<<"jsonrpc">> => <<"2.0">>,
+                       <<"error">> => #{<<"code">> => ?INVALID_PARAMS,
+                                        <<"message">> => <<"Invalid prompt name">>}}};
+                {error, unsupported_tool} ->
+                    {error, 400,
+                     #{<<"jsonrpc">> => <<"2.0">>,
+                       <<"error">> => #{<<"code">> => ?INVALID_PARAMS,
+                                        <<"message">> => <<"Unknown tool">>}}};
                 {error, Resp} ->
                     {error, 400,
                      #{<<"jsonrpc">> => <<"2.0">>,
