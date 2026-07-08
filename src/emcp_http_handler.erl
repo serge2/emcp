@@ -14,7 +14,6 @@ init(Req0, State) ->
     Method = cowboy_req:method(Req0),
     case Method of
         <<"POST">> -> handle_post(Req0, State);
-        <<"GET">> -> handle_get(Req0, State);
         <<"DELETE">> -> handle_delete(Req0, State);
         _ ->
             logger:error("Unsupported method: ~ts", [Method]),
@@ -27,20 +26,6 @@ init(Req0, State) ->
                 <<"Method Not Allowed">>,
                 Req0
             ),
-            {ok, Req, undefined}
-    end.
-
-handle_get(Req0, #{api_keys := ApiKeys} = _State) ->
-    case validate_api_key(Req0, ApiKeys) of
-        ok ->
-            %% Simple health check
-            Body = <<"{\"ok\":true,\"service\":\"mcp_fs\",\"version\":\"0.1.0\"}">>,
-            Req = cowboy_req:reply(200, #{<<"content-type">> => <<"application/json">>}, Body, Req0),
-            {ok, Req, undefined};
-        {error, Reason} ->
-            Headers = cowboy_req:headers(Req0),
-            logger:error("Invalid API-Key:~ts.~nHTTP Request:~nHeaders:~n~p~n", [Reason, Headers]),
-            Req = cowboy_req:reply(401, #{<<"content-type">> => <<"plain/text">>}, Reason, Req0),
             {ok, Req, undefined}
     end.
 
