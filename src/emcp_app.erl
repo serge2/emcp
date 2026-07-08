@@ -5,7 +5,7 @@
 
 start(_StartType, _StartArgs) ->
     logger:info("MCP Framework application starting..."),
-    ets:new(mcp_sessions,[named_table, public, set]),
+    _ = ets:new(mcp_sessions,[named_table, public, set]),
     emcp_sup:start_link().
 
 stop(_State) ->
