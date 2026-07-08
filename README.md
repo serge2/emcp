@@ -1,20 +1,22 @@
-# emcp — Erlang MCP server (framework)
+# emcp — Erlang MCP server framework
 
-**Lightweight framework for building MCP (Model Context Protocol) services over HTTP/JSON‑RPC.**
+**Lightweight framework for building MCP (Model Context Protocol) services over HTTP(S).**
 
 ---
 
 ## Overview
 
-emcp is a small Erlang framework that simplifies building MCP‑compatible services that communicate via JSON‑RPC over HTTP(S). It provides session lifecycle management, tools and resources handling, input schema validation.
+emcp is a small Erlang framework for building MCP‑compatible services over HTTP(S). It provides session lifecycle management, support for tools, resources, prompts, client‑requested tool cancellation, and ping, as well as argument validation for tool calls based on incoming schemas.
 
 ## Features
 
-- JSON‑RPC over HTTP(S) for session initialization and tool/resource calls
-- Declarative tool/resource schemas and automatic validation of input parameters
-- Per‑session state, tracking of active requests and request cancellation
-- Easy extension: add new tools and resources by declaring schemas and implementing handler functions
-- At the moment, the framework does not provide OAuth 2.1-based user authorization; use API keys for access control instead
+- HTTP(S) transport for session initialization and MCP calls
+- Declarative tool/resource/prompt schemas and argument validation for tool invocations based on incoming schemas
+- Support for tools, resources, prompts, client‑requested tool cancellation, and ping
+- Maximum tool execution timeout of 5 minutes
+- Current limitations: resource lookup currently only matches names exactly; there is no validation for resource or prompt requests; dynamic capability changes are not supported; GET‑based subscription requests for messages are not supported
+- Easy extension: add new tools, resources, and prompts by declaring schemas and implementing handler functions
+- At the moment, the framework does not provide OAuth 2.1‑based user authorization; use API keys for access control instead
 
 ## Quick start (integration example)
 
@@ -142,7 +144,7 @@ Start the MCP as a dedicated listener:
 
 start(_StartType, _StartArgs) ->
     AllowedApiKeys = application:get_env(my_app, api_keys, []),
-    emcp:start(my_app_mcp_listener, my_app_mcp, {0,0,0,0}, 8080, "/mcp", _UseTLS = false, AllowedApiKeys, _Extra = #{root_dir => "/var/my_app/data"}),
+    emcp:start(my_app_mcp_listener, my_app_mcp, {0,0,0,0}, 8080, "/mcp", _UseTLS = false, AllowedApiKeys, _Extra = #{}),
     my_app_sup:start_link().
 
 stop(_State) ->
@@ -249,5 +251,11 @@ curl -i -X POST http://localhost:8080/mcp \
   -d '{"jsonrpc":"2.0","id":6,"method":"prompts/get","params":{"name": "code_review", "arguments": {"code": "def hello():\n    print('world')"}}}'
 ```
 
-To add a tool, declare it in your MCP implementation module's `schema()` and implement the corresponding handler function in that module.
+## Copyright and License
+
+Copyright (c) 2025-2026 Sergii Polkovnikov <serge.polkovnikov@gmail.com>
+
+This project is licensed under the MIT License. See [LICENSE](LICENSE) for the full text.
+
+
 
