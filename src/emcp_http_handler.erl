@@ -118,7 +118,7 @@ handle_delete(Req, #{api_keys := ApiKeys} = _State) ->
 do_reply(Req, ResponseStatus, OutHeaders, RespBin, OutputBuf) ->
     ParsedAccept = cowboy_req:parse_header(<<"accept">>, Req, []),
     
-    %% Проверяем, есть ли среди них text/event-stream
+    %% Check whether any of them is text/event-stream
     IsSseSupported = lists:any(
         fun({{Type, SubType, _}, _Quality, _Ext}) -> 
             Type =:= <<"text">> andalso SubType =:= <<"event-stream">>
@@ -127,13 +127,13 @@ do_reply(Req, ResponseStatus, OutHeaders, RespBin, OutputBuf) ->
 
     case IsSseSupported of    
         false ->
-            %% Клиент не поддерживает SSE -> возвращаем обычный JSON
+            %% The client does not support SSE -> return regular JSON
             ReqJson = cowboy_req:reply(ResponseStatus,
                                        OutHeaders#{<<"content-type">> => <<"application/json">>},
                                        RespBin, Req),
             {ok, ReqJson, undefined};
         true ->
-            %% Клиент поддерживает SSE -> стримим чанки
+            %% The client supports SSE -> stream chunks
             StreamReq = cowboy_req:stream_reply(ResponseStatus,
                 OutHeaders#{
                     <<"content-type">> => <<"text/event-stream">>,
@@ -147,22 +147,22 @@ do_reply(Req, ResponseStatus, OutHeaders, RespBin, OutputBuf) ->
                 stream_chunks(StreamReq, OutputBuf ++ [RespBin])
             catch Class:Reason:Stack ->
                 logger:error("SSE error ~p:~p ~p", [Class, Reason, Stack]),
-                %% отправляем пустой FIN‑чанк, чтобы закрыть соединение
+                %% send an empty FIN chunk to close the connection
                 cowboy_req:stream_events(#{data => <<>>}, fin, StreamReq)
             end,
             {ok, StreamReq, undefined}
     end.
 
 
-%% Отправка событий SSE
+%% Sending SSE events
 stream_chunks(StreamReq, []) ->
-    logger:info("SSE: пустой ответ, закрываем поток"),
+    logger:info("SSE: empty response, closing stream"),
     cowboy_req:stream_events(#{ data => <<>>}, fin, StreamReq);
 stream_chunks(StreamReq, [Last]) ->
-    logger:info("SSE: отправляем последний чанк размером ~p байт с FIN~n~ts~n", [byte_size(Last), Last]),
+    logger:info("SSE: sending the final chunk of size ~p bytes with FIN~n~ts~n", [byte_size(Last), Last]),
     cowboy_req:stream_events(#{ data => Last}, fin, StreamReq);
 stream_chunks(StreamReq, [H | T]) ->
-    logger:info("SSE: отправляем чанк размером ~p байт (осталось ~p)", [byte_size(H), length(T)]),
+    logger:info("SSE: sending chunk of size ~p bytes (remaining ~p)", [byte_size(H), length(T)]),
     cowboy_req:stream_events(#{ data => H}, nofin, StreamReq),
     stream_chunks(StreamReq, T).
 
@@ -327,17 +327,17 @@ validate_api_key(Req, ApiKeys) when  is_list(ApiKeys) ->
 
 -spec get_api_key_from_headers(cowboy_req:req()) -> binary() | undefined.
 get_api_key_from_headers(Req) ->
-    %% Сначала проверяем приоритетный x-api-key (он возвращает бинарник или undefined)
+    %% First, check the prioritized x-api-key (it returns a binary or undefined)
     case cowboy_req:header(<<"x-api-key">>, Req) of
         Key when is_binary(Key) ->
             Key;
         undefined ->
-            %% Если его нет, парсим стандартный Authorization
+            %% If it is missing, parse the standard Authorization
             case cowboy_req:parse_header(<<"authorization">>, Req) of
                 {bearer, Token} ->
                     Token;
                 _ ->
-                    undefined %% Если там Basic auth, Digest или заголовка нет
+                    undefined %% If there is Basic auth, Digest, or no header at all
             end
     end.
 
