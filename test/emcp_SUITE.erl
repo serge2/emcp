@@ -6,19 +6,23 @@
 all() -> [
     initialize_test,
     invalid_api_key_test,
+    without_api_key_test,
     invalid_session_test,
     auth_bearer_header_test,
     missing_api_key_test,
     missing_session_test,
     tools_list_test,
     tools_call_echo_test,
+    unknown_tool_call_test,
     tools_call_invalid_arguments_test,
     tools_call_sleep_test,
     sleep_cancel_test,
     resources_list_test,
     resources_read_test,
+    unknown_resource_read_test,
     prompts_list_test,
     prompts_get_test,
+    unknown_prompt_get_test,
     accept_header_sse_test,
     ping_test,
     cleanup_test
@@ -45,6 +49,8 @@ init_per_testcase(initialize_test, Config) ->
     Config;
 init_per_testcase(invalid_api_key_test, Config) ->
     Config;
+init_per_testcase(without_api_key_test, Config) ->
+    Config;
 init_per_testcase(invalid_session_test, Config) ->
     Config;
 init_per_testcase(missing_api_key_test, Config) ->
@@ -66,6 +72,9 @@ end_per_testcase(initialize_test, _Config) ->
     ok;
 % There is no session to delete for this test case
 end_per_testcase(invalid_api_key_test, _Config) ->
+    ok;
+% There is no session to delete for this test case
+end_per_testcase(without_api_key_test, _Config) ->
     ok;
 % There is no session to delete for this test case
 end_per_testcase(invalid_session_test, _Config) ->
@@ -106,6 +115,13 @@ invalid_api_key_test(Config) ->
     InitReq = jsx:encode(#{<<"jsonrpc">> => <<"2.0">>, <<"id">> => 1234, <<"method">> => <<"initialize">>, <<"params">> => #{}}),
     {ok, {{_P,401,_}, _H, Body}} = httpc:request(post, {Url, [{"x-api-key", "wrong"}], "application/json", InitReq}, [], [{body_format, binary}]),
     ?assertEqual(<<"invalid_api_key">>, Body).
+
+without_api_key_test(Config) ->
+    Url = cfg_get(Config, url),
+    %% Send POST initialize without any API key header
+    InitReq = jsx:encode(#{<<"jsonrpc">> => <<"2.0">>, <<"id">> => 1234, <<"method">> => <<"initialize">>, <<"params">> => #{}}),
+    {ok, {{_P,401,_}, _H, Body}} = httpc:request(post, {Url, [], "application/json", InitReq}, [], [{body_format, binary}]),
+    ?assertEqual(<<"missing_api_key">>, Body).
 
 invalid_session_test(Config) ->
     Url = cfg_get(Config, url),
@@ -166,6 +182,16 @@ tools_call_echo_test(Config) ->
     ResultCall = maps:get(<<"result">>, RespCall),
     Content = maps:get(<<"content">>, ResultCall),
     ?assertEqual(<<"Hello CT">>, maps:get(<<"text">>, Content)).
+
+unknown_tool_call_test(Config) ->
+    Url = cfg_get(Config, url),
+    Sess = cfg_get(Config, session),
+    CallReq = jsx:encode(#{<<"jsonrpc">> => <<"2.0">>, <<"id">> => 3, <<"method">> => <<"tools/call">>,
+                           <<"params">> => #{ <<"name">> => <<"unknown_tool">>, <<"arguments">> => #{} }}),
+    HeadersCall = [{"x-api-key", "demo"}, {"mcp-session-id", Sess}],
+    {ok, {{_P,400,_}, _H3, BodyCall}} = httpc:request(post, {Url, HeadersCall, "application/json", CallReq}, [], [{body_format, binary}]),
+    Resp = jsx:decode(BodyCall, [return_maps]),
+    ?assertMatch(#{<<"error">> := #{<<"code">> := -32602}}, Resp).
 
 tools_call_invalid_arguments_test(Config) ->
     Url = cfg_get(Config, url),
@@ -242,6 +268,15 @@ resources_read_test(Config) ->
     Resp = jsx:decode(Body, [return_maps]),
     ?assertMatch(#{<<"result">> := #{<<"contents">> := [_|_]}}, Resp).
 
+unknown_resource_read_test(Config) ->
+    Url = cfg_get(Config, url),
+    Sess = cfg_get(Config, session),
+    Req = jsx:encode(#{<<"jsonrpc">> => <<"2.0">>, <<"id">> => 4, <<"method">> => <<"resources/read">>, <<"params">> => #{<<"uri">> => <<"resource://sys/unknown">>} }),
+    HeadersRead = [{"x-api-key", "demo"}, {"mcp-session-id", Sess}],
+    {ok, {{_P,400,_}, _H, Body}} = httpc:request(post, {Url, HeadersRead, "application/json", Req}, [], [{body_format, binary}]),
+    Resp = jsx:decode(Body, [return_maps]),
+    ?assertMatch(#{<<"error">> := #{<<"code">> := -32002}}, Resp).
+
 prompts_list_test(Config) ->
     Url = cfg_get(Config, url),
     Sess = cfg_get(Config, session),
@@ -264,6 +299,15 @@ prompts_get_test(Config) ->
     ?assertEqual(<<"Code review prompt">>, maps:get(<<"description">>, Result)),
     Messages = maps:get(<<"messages">>, Result, []),
     ?assert(lists:any(fun(M) -> maps:get(<<"role">>, M, <<"">>) == <<"user">> end, Messages)).
+
+unknown_prompt_get_test(Config) ->
+    Url = cfg_get(Config, url),
+    Sess = cfg_get(Config, session),
+    Req = jsx:encode(#{<<"jsonrpc">> => <<"2.0">>, <<"id">> => 11, <<"method">> => <<"prompts/get">>, <<"params">> => #{<<"name">> => <<"unknown_prompt">>, <<"arguments">> => #{<<"code">> => <<"print(\'hello\')">>} } }),
+    Headers = [{"x-api-key", "demo"}, {"mcp-session-id", Sess}],
+    {ok, {{_P,400,_}, _H, Body}} = httpc:request(post, {Url, Headers, "application/json", Req}, [], [{body_format, binary}]),
+    Resp = jsx:decode(Body, [return_maps]),
+    ?assertMatch(#{<<"error">> := #{<<"code">> := -32602}}, Resp).
 
 accept_header_sse_test(Config) ->
     Url = cfg_get(Config, url),
