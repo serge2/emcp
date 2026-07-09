@@ -42,7 +42,8 @@ init_per_suite(Config) ->
 
 end_per_suite(Config) ->
     Name = cfg_get(Config, listener),
-    emcp:stop(Name).
+    ok = emcp:stop(Name),
+    ok = application:stop(emcp).
     
 
 init_per_testcase(initialize_test, Config) ->
