@@ -1,19 +1,59 @@
 [
  {emcp, [
    {tls, [
-     {keyfile, "/config/server.key.pem"},
-     {certfile, "/config/server.cert.pem"}
-   ]},
-
-   {api_keys,
-     [
-      <<"SomeAPIKey123qwe">>
-     ]}
+     {keyfile, "config/server.key.pem"},
+     {certfile, "config/server.cert.pem"}
+   ]}
  ]},
 
  {kernel, [
-     {logger_level, info},
-     {logger_sasl_compatible, false}
- ]}
+    {logger_level, debug},
+
+    {logger, [
+      {handler, default, logger_std_h, #{
+        level => info,
+        formatter => {logger_formatter, #{template => [time, " [", level, "] ", msg, "\n"]}}
+      }},
+
+      %%  info, warning
+      {handler, info_file, logger_std_h, #{
+        level => info,
+        filters => [{stop_errors, {fun logger_filters:level/2, {stop, gteq, error}}}],
+        config => #{
+          type => file,
+          file => "logs/info.log",
+          max_no_bytes => 10485760,
+          max_no_files => 5
+        },
+        formatter => {logger_formatter, #{template => [time, " [", level, "] ", msg, "\n"]}}
+      }},
+
+      %% (error, critical, alert, emergency)
+      {handler, error_file, logger_std_h, #{
+        level => error,
+        config => #{
+          type => file,
+          file => "logs/errors.log",
+          max_no_bytes => 10485760,
+          max_no_files => 5
+        },
+        formatter => {logger_formatter, #{
+          template => [time, " [", level, "] [", pid, "] ", mfa, ":", line, " -> ", msg, "\n"]
+        }}
+      }},
+
+      %% debug
+      {handler, debug_file, logger_std_h, #{
+        level => debug,
+        config => #{
+          type => file,
+          file => "logs/debug.log",
+          max_no_bytes => 10485760,
+          max_no_files => 3
+        },
+        formatter => {logger_formatter, #{template => [time, " [", level, "] ", mfa, ":", line, " ", msg, "\n"]}}
+      }}
+    ]}
+  ]}
 
 ].

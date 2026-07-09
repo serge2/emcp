@@ -98,7 +98,7 @@ find_free_port() ->
 start_cowboy_listener(Name, Port) ->
     try
         %% Start with a custom cowboy entity with a demo API key so tests can authenticate
-        Allowed = [unicode:characters_to_binary("demo")],
+        Allowed = [<<"demo">>],
         Dispatch = cowboy_router:compile([
             {'_', [emcp:cowboy_route("/mcp", test_mcp, Allowed, #{})]}
         ]),

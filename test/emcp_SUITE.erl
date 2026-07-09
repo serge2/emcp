@@ -311,7 +311,7 @@ find_free_port() ->
 start_emcp_listener(Name, Port) ->
     try
         %% Start with a demo API key so tests can authenticate
-        Allowed = [unicode:characters_to_binary("demo")],
+        Allowed = [<<"demo">>],
         {ok, _} = emcp:start(Name, test_mcp, {127,0,0,1}, Port, "/mcp", false, Allowed, #{root_dir => "/tmp"}),
         true
     catch _:_ ->
